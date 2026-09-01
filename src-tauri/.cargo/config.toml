@@ -1,0 +1,28 @@
+# Replace the slow MSVC link.exe with LLVM's lld-link (ships with Rust).
+# This is the single biggest win for Windows compile+link times.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
+[target.aarch64-pc-windows-msvc]
+linker = "rust-lld"
+
+# Dev profile: keep line-table diagnostics without the multi-gigabyte
+# incremental cache produced by Moke + Readest's large dependency graph.
+[profile.dev]
+codegen-units = 16
+incremental = false
+opt-level = 0
+debug = 1
+
+# DevEco/OpenHarmony SDK 23 NDK linker used by the local Windows build host.
+# Update this path only when the SDK is installed somewhere else.
+[env]
+OHOS_NDK_HOME = "C:/Users/Administrator/AppData/Local/OpenHarmony/Sdk/23/native"
+CC_aarch64_unknown_linux_ohos = "C:/Users/Administrator/AppData/Local/OpenHarmony/Sdk/23/native/llvm/bin/clang.exe"
+CC_x86_64_unknown_linux_ohos = "C:/Users/Administrator/AppData/Local/OpenHarmony/Sdk/23/native/llvm/bin/clang.exe"
+
+[target.aarch64-unknown-linux-ohos]
+linker = "C:/Users/Administrator/AppData/Local/OpenHarmony/Sdk/23/native/llvm/bin/clang.exe"
+
+[target.x86_64-unknown-linux-ohos]
+linker = "C:/Users/Administrator/AppData/Local/OpenHarmony/Sdk/23/native/llvm/bin/clang.exe"

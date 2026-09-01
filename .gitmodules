@@ -1,0 +1,26 @@
+[submodule "readest"]
+	path = readest
+	url = https://github.com/hehetoshang/readest-reader.git
+[submodule "tauri"]
+	path = vendor/tauri
+	url = https://github.com/hehetoshang/tauri.git
+	branch = dev
+[submodule "vendor/foliate-js"]
+	path = vendor/foliate-js
+	url = https://github.com/hehetoshang/foliate-js
+[submodule "vendor/simplecc-wasm"]
+	path = vendor/simplecc-wasm
+	url = https://github.com/readest/simplecc-wasm.git
+[submodule "vendor/tauri-plugins"]
+	path = vendor/tauri-plugins
+	url = https://github.com/readest/tauri-plugins-workspace.git
+[submodule "vendor/js-mdict"]
+	path = vendor/js-mdict
+	url = https://github.com/readest/js-mdict.git
+[submodule "vendor/openharmony-ability"]
+	path = vendor/openharmony-ability
+	url = https://github.com/harmony-contrib/openharmony-ability.git
+[submodule "vendor/wry"]
+	path = vendor/wry
+	url = https://github.com/hehetoshang/wry.git
+	branch = feat/open-harmony

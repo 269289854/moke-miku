@@ -1,0 +1,40 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js
+.next/
+out/
+
+# production
+build/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env files
+.env*.local
+
+# tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/bin/readest-*
+
+# binaries and logs (project-wide safety net)
+*.log
+*.exe
+
+# IDE
+.vscode/
+.idea/
+# reference checkout, not part of client build
+CODE_NEED/
+tsconfig.tsbuildinfo
+.pnpm-store/

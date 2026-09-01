@@ -1,0 +1,636 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+      - 'dev/*'
+    paths-ignore:
+      - '**.md'
+      - '.vscode/**'
+      - 'CODE_NEED/**'
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.vscode/**'
+      - 'CODE_NEED/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build on ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            os: macos-latest
+          - platform: ubuntu
+            os: ubuntu-22.04
+          - platform: windows
+            os: windows-latest
+          - platform: android
+            os: ubuntu-22.04
+          - platform: ios
+            os: macos-latest
+          - platform: ohos
+            os: ubuntu-22.04
+            node: 24
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          standalone: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node || 20 }}
+          cache: 'pnpm'
+
+      - name: Setup Java
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Install Android SDK packages
+        if: matrix.platform == 'android'
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME || '/usr/local/lib/android/sdk' }}
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          yes | sdkmanager --install \
+            'platform-tools' \
+            'platforms;android-35' \
+            'build-tools;35.0.0' \
+            'ndk;27.0.12077973'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Android Rust targets
+        if: matrix.platform == 'android'
+        run: |
+          rustup target add aarch64-linux-android
+
+      - name: Install iOS Rust targets
+        if: matrix.platform == 'ios'
+        run: |
+          rustup target add aarch64-apple-ios
+
+      # Tauri generates project.yml in-process, but the localization prepare step
+      # regenerates the Xcode project after adding .lproj resources. Install an
+      # exact XcodeGen release instead of relying on the macOS runner's PATH.
+      - name: Install pinned XcodeGen
+        if: matrix.platform == 'ios'
+        shell: bash
+        env:
+          XCODEGEN_VERSION: 2.46.0
+          XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RUNNER_TEMP/xcodegen.zip"
+          EXTRACT_DIR="$RUNNER_TEMP/xcodegen-download"
+          PREFIX="$RUNNER_TEMP/xcodegen-$XCODEGEN_VERSION"
+          trap 'rm -f "$ARCHIVE"; rm -rf "$EXTRACT_DIR"' EXIT
+          rm -f "$ARCHIVE"
+          rm -rf "$EXTRACT_DIR" "$PREFIX"
+          curl --fail --location --retry 3 \
+            --output "$ARCHIVE" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+          echo "$XCODEGEN_SHA256  $ARCHIVE" | shasum -a 256 --check
+          unzip -q "$ARCHIVE" -d "$EXTRACT_DIR"
+          mkdir -p "$PREFIX"
+          PREFIX="$PREFIX" "$EXTRACT_DIR/xcodegen/install.sh"
+          echo "$PREFIX/bin" >> "$GITHUB_PATH"
+          "$PREFIX/bin/xcodegen" --version
+
+      - name: Install OpenHarmony Rust targets
+        if: matrix.platform == 'ohos'
+        run: |
+          rustup target add aarch64-unknown-linux-ohos x86_64-unknown-linux-ohos
+
+      - name: Install Linux Dependencies
+        if: matrix.platform == 'ubuntu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      # libGL1 是 DevEco 纹理压缩（Linux）所需；jq 是 setup-ohos 读取 sdk-pkg.json 所用（GH runner 已预装）。
+      - name: Install OpenHarmony Linux dependencies
+        if: matrix.platform == 'ohos'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev jq
+
+      # 安装 HarmonyOS 命令行工具 + SDK + NDK。
+      # 设置 HOS_SDK_HOME 与 OHOS_NDK_HOME（=$HOS_SDK_HOME/default/openharmony）。
+      # 注意：setup-ohos 会在 PATH 中带入 Node.js 18，后续会重新调用 setup-node
+      # 将 Node 24 再次前置到 PATH，以确保 pnpm/Next.js 使用正确版本。
+      - name: Setup HarmonyOS SDK and command-line tools
+        if: matrix.platform == 'ohos'
+        uses: ErBWs/setup-ohos@v2
+        with:
+          version: 6.1.1.280
+          cache: true
+
+      # setup-ohos 会在 PATH 中带入 Node.js 18，覆盖 setup-node 装的 Node 24。
+      # 重新调用 setup-node 将 Node 24 前置到 PATH，确保后续 pnpm/Next.js 使用正确版本。
+      - name: Re-assert Node 24 after OHOS setup
+        if: matrix.platform == 'ohos'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./src-tauri -> target
+            ./vendor/tauri -> target
+          key: ${{ runner.os }}-${{ matrix.platform }}-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'vendor/tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.platform }}-cargo-
+
+      # ohrs 是 OpenHarmony Rust 构建工具，cargo-mobile2 编译 OHOS target 时会调用 `ohrs build`。
+      # 它读取 OHOS_NDK_HOME（setup-ohos 已设置）。
+      - name: Install ohrs (OpenHarmony Rust tool)
+        if: matrix.platform == 'ohos'
+        run: cargo install ohrs --git https://github.com/ohos-rs/ohos-rs --branch ohos
+
+      # 官方 tauri-cli 没有 `ohos` 子命令；本仓库 vendor/ 下的 `tauri` 子模块已包含该子命令与
+      # [patch.crates-io]（cargo-mobile2 feat/ohos、wry/tao feat/open-harmony）。
+      # readest 的 Cargo.toml path 依赖也指向 ../vendor/tauri/crates/tauri，所以直接用
+      # 子模块编译 CLI 能保证 CLI 与库版本一致。
+      - name: Build Tauri CLI (from vendor/tauri submodule)
+        if: matrix.platform == 'ohos'
+        run: |
+          cargo build --release --manifest-path "$GITHUB_WORKSPACE/vendor/tauri/Cargo.toml" -p tauri-cli
+          echo "$GITHUB_WORKSPACE/vendor/tauri/target/release" >> "$GITHUB_PATH"
+
+      - name: Cache readest Next.js
+        uses: actions/cache@v4
+        with:
+          path: readest/apps/readest-app/.next/cache
+          key: ${{ runner.os }}-nextjs-readest-${{ matrix.platform }}-${{ hashFiles('readest/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-readest-${{ matrix.platform }}-
+            ${{ runner.os }}-nextjs-readest-
+
+      - name: Cache readest node_modules
+        uses: actions/cache@v4
+        with:
+          path: readest/node_modules
+          key: ${{ runner.os }}-readest-modules-${{ matrix.platform }}-${{ hashFiles('readest/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-readest-modules-${{ matrix.platform }}-
+            ${{ runner.os }}-readest-modules-
+
+      - name: Cache readest vendor
+        id: cache-readest-vendor
+        uses: actions/cache@v4
+        with:
+          path: readest/apps/readest-app/public/vendor
+          key: ${{ runner.os }}-readest-vendor-${{ matrix.platform }}-${{ hashFiles('readest/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-readest-vendor-${{ matrix.platform }}-
+            ${{ runner.os }}-readest-vendor-
+
+      - name: Install Frontend Dependencies
+        run: pnpm install
+
+      - name: Install Readest Dependencies
+        run: |
+          cd readest
+          pnpm install --no-frozen-lockfile
+          if [ "${{ steps.cache-readest-vendor.outputs.cache-hit }}" != "true" ]; then
+            pnpm --filter @readest/readest-app setup-vendors
+          fi
+        shell: bash
+
+      - name: Build Tauri app
+        if: contains(fromJSON('["macos", "ubuntu", "windows"]'), matrix.platform)
+        run: pnpm tauri build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # The stock tauri-cli renders the adaptive-icon foreground full-bleed,
+      # which the Android system mask crops. Use the vendored tauri CLI
+      # (with the safe-zone fix) so the APK ships a properly centered icon.
+      - name: Build Tauri CLI (from vendor/tauri submodule)
+        if: matrix.platform == 'android'
+        run: |
+          cargo build --release --manifest-path "$GITHUB_WORKSPACE/vendor/tauri/Cargo.toml" -p tauri-cli
+          echo "$GITHUB_WORKSPACE/vendor/tauri/target/release" >> "$GITHUB_PATH"
+
+      - name: Initialize Tauri Android project
+        if: matrix.platform == 'android'
+        run: pnpm tauri android init
+
+      - name: Add localized Android app names
+        if: matrix.platform == 'android'
+        run: node scripts/prepare-mobile-app-names.mjs android
+
+      # tauri android init scaffolds gen/android with Tauri's DEFAULT launcher icons.
+      # Regenerate them from src-tauri/icons/icon.png: since gen/android already
+      # exists, `tauri icon` writes straight into gen/android/app/src/main/res/
+      # (mipmaps + adaptive-icon xml), so the APK ships with Moke's icon instead of
+      # the default Tauri logo.
+      - name: Generate Android launcher icons
+        if: matrix.platform == 'android'
+        run: cargo tauri icon src-tauri/icons/icon.png
+
+      # `tauri android init` scaffolds a default MainActivity that lacks the
+      # KeyDownInterceptor interface readest's native-bridge plugin requires, so
+      # the intercept_keys command (volume-key page turn) silently no-ops
+      # (talebook/moke#17). Overlay our key-interception MainActivity so KeyEvents
+      # are forwarded to the WebView. Find the generated path so this stays valid
+      # if the app identifier/package ever changes.
+      - name: Overlay key-interception MainActivity
+        if: matrix.platform == 'android'
+        run: |
+          for f in $(find src-tauri/gen/android/app/src/main/java -name MainActivity.kt); do
+            cp src-tauri/android/MainActivity.kt "$f"
+          done
+
+      - name: Patch Android flavor dimensions
+        if: matrix.platform == 'android'
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "src-tauri/gen/android/app/build.gradle.kts";
+            const s = fs.readFileSync(p, "utf8");
+            if (s.includes("missingDimensionStrategy")) process.exit(0);
+            fs.writeFileSync(p, s.replace(/(defaultConfig\s*\{\n)/, "$1        missingDimensionStrategy(\"store\", \"foss\")\n"));
+          '
+
+      - name: Prepare Android signing key
+        if: matrix.platform == 'android'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          KEYSTORE_BASE64="${ANDROID_KEYSTORE_BASE64:-$ANDROID_KEY_BASE64}"
+          KEYSTORE_PASSWORD="${ANDROID_KEYSTORE_PASSWORD:-$ANDROID_KEY_PASSWORD}"
+
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ]; then
+            echo "Missing Android signing secrets." >&2
+            exit 1
+          fi
+
+          base64 -d <<< "$KEYSTORE_BASE64" > "$RUNNER_TEMP/android-release.jks"
+
+      - name: Build Android APK
+        if: matrix.platform == 'android'
+        run: pnpm tauri android build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      # Tauri's Android build produces an unsigned universal APK.  Signing it is
+      # deliberately a separate, explicit release step so the file uploaded below
+      # cannot be mistaken for a release-ready APK.
+      - name: Align, sign, and verify Android release APK
+        if: matrix.platform == 'android'
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KEYSTORE_PASSWORD="${ANDROID_KEYSTORE_PASSWORD:-$ANDROID_KEY_PASSWORD}"
+          KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+          export KEYSTORE_PASSWORD
+          export ANDROID_SIGNING_KEY_PASSWORD="$KEY_PASSWORD"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          UNSIGNED_APK="src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"
+          ALIGNED_APK="$RUNNER_TEMP/moke-release-aligned.apk"
+          RELEASE_APK="src-tauri/gen/android/app/build/outputs/apk/universal/release/moke-android-release.apk"
+
+          [ -f "$UNSIGNED_APK" ] || { echo "Expected unsigned APK not found: $UNSIGNED_APK" >&2; exit 1; }
+          [ -x "$BUILD_TOOLS/zipalign" ] || { echo "zipalign not found in $BUILD_TOOLS" >&2; exit 1; }
+          [ -x "$BUILD_TOOLS/apksigner" ] || { echo "apksigner not found in $BUILD_TOOLS" >&2; exit 1; }
+
+          # Android requires 16 KiB alignment before APK Signature Scheme signing.
+          "$BUILD_TOOLS/zipalign" -P 16 -f -v 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/android-release.jks" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_SIGNING_KEY_PASSWORD \
+            --out "$RELEASE_APK" \
+            "$ALIGNED_APK"
+
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$RELEASE_APK"
+          "$BUILD_TOOLS/zipalign" -c -P 16 -v 4 "$RELEASE_APK"
+          echo "ANDROID_RELEASE_APK=$RELEASE_APK" >> "$GITHUB_ENV"
+
+      # ============ iOS 构建 ============
+      - name: Override iOS bundle identifier
+        if: matrix.platform == 'ios'
+        run: |
+          sed -i '' 's/"identifier": "org.houheya.moke"/"identifier": "app.suyun3.test"/' src-tauri/tauri.conf.json
+
+      - name: Initialize Tauri iOS project
+        if: matrix.platform == 'ios'
+        env:
+          APPLE_DEVELOPMENT_TEAM: "6X9BLAS47C"
+        run: pnpm tauri ios init
+
+      - name: Add localized iOS app names
+        if: matrix.platform == 'ios'
+        run: node scripts/prepare-mobile-app-names.mjs ios
+
+      # Tauri forces Automatic signing + -allowProvisioningUpdates, which needs a
+      # logged-in Xcode Apple ID (unavailable on CI) -> "No Accounts". Switch the
+      # generated pbxproj to Manual signing so xcodebuild uses the profile we drop
+      # into ~/Library/MobileDevice/Provisioning Profiles instead.
+      # ponytail: profile Name == bundle id == app.suyun3.test, Team 6X9BLAS47C.
+      - name: Force manual iOS signing
+        if: matrix.platform == 'ios'
+        run: |
+          PBX="src-tauri/gen/apple/moke.xcodeproj/project.pbxproj"
+          python3 - "$PBX" <<'PY'
+          import sys, re
+          p = sys.argv[1]
+          s = open(p).read()
+          if "CODE_SIGN_STYLE = manual" in s:
+              sys.exit(0)
+          s = re.sub(
+              r"(DEVELOPMENT_TEAM = [^;]+;)",
+              r'\1\n\t\t\t\tCODE_SIGN_STYLE = manual;\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "app.suyun3.test";',
+              s,
+          )
+          # ponytail: native-bridge swift plugin uses Storefront (15+) and
+          # registerForTraitChanges/assumeIsolated (17+); Tauri defaults target
+          # to 13, which breaks the Swift availability check. Bump to 17.0.
+          s = re.sub(r"IPHONEOS_DEPLOYMENT_TARGET = [^;]+;",
+                     "IPHONEOS_DEPLOYMENT_TARGET = 17.0;", s)
+          open(p, "w").write(s)
+          print("patched pbxproj to manual signing, specifier app.suyun3.test, deployment target 17.0")
+          PY
+
+      - name: Import iOS signing
+        if: matrix.platform == 'ios'
+        env:
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          if [ -z "$IOS_CERTIFICATE_P12_BASE64" ] || [ -z "$IOS_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "Missing iOS signing secrets." >&2
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/ios.keychain-db"
+          security create-keychain -p "$IOS_CERTIFICATE_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$IOS_CERTIFICATE_PASSWORD" "$KEYCHAIN"
+          echo "$IOS_CERTIFICATE_P12_BASE64" | base64 -d > "$RUNNER_TEMP/ios.p12"
+          security import "$RUNNER_TEMP/ios.p12" -P "$IOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 -d > \
+            "$HOME/Library/MobileDevice/Provisioning Profiles/moke.mobileprovision"
+
+          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/"
+
+      - name: Build iOS device (archive only)
+        if: matrix.platform == 'ios'
+        env:
+          APPLE_DEVELOPMENT_TEAM: "6X9BLAS47C"
+          APPLE_CODE_SIGN_IDENTITY: "Apple Development: jie ma (23WYGBKWTG)"
+        run: |
+          # ponytail: we only need the .xcarchive from tauri; the export step
+          # below uses our own ExportOptions.plist, so ignore tauri's own
+          # (broken) exportArchive. Fail only if the archive wasn't produced.
+          pnpm tauri ios build || true
+          ARCHIVE=$(find src-tauri/gen/apple/build -name '*.xcarchive' -maxdepth 3 | head -n1)
+          [ -n "$ARCHIVE" ] || { echo "No .xcarchive produced"; exit 1; }
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Export iOS IPA
+        if: matrix.platform == 'ios'
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE" \
+            -exportPath ios-release-artifacts \
+            -exportOptionsPlist ios/ExportOptions.plist
+
+      # ============ OpenHarmony 构建 ============
+      # 生成 src-tauri/gen/ohos（已 gitignore）。必须在 build 之前跑：
+      # `ohos build` 的 ensure_init 找不到该目录会直接报错。
+      - name: Initialize OpenHarmony project
+        if: matrix.platform == 'ohos'
+        run: cargo tauri ohos init
+        env:
+          OHOS_HOME: ${{ env.OHOS_NDK_HOME }}
+          HOS_SDK_HOME: ${{ env.HOS_SDK_HOME }}
+
+      # ohos init 用模板默认图标（蓝底系统图标）。`tauri icon` 现在支持
+      # OpenHarmony：gen/ohos 已存在，它会把 Moke 图标写进
+      # gen/ohos/{entry,AppScope}/resources/base/media（foreground/background/
+      # startIcon），否则 APK 会带默认图标。CLI 来自上面编译的 vendor/tauri。
+      - name: Generate OpenHarmony launcher icons
+        if: matrix.platform == 'ohos'
+        run: cargo tauri icon src-tauri/icons/icon.png
+        env:
+          OHOS_HOME: ${{ env.OHOS_NDK_HOME }}
+          HOS_SDK_HOME: ${{ env.HOS_SDK_HOME }}
+
+      # 提前 ohpm install，让 scripts/prepare-ohos.mjs 能改到
+      # oh_modules/@ohos-rs/ability 里的文件（补 domStorageAccess(true) +
+      # back-key 处理：MainPage.onBackPress / AppStorage 注册 / backwardIfPossible，
+      # 统一由该脚本维护，取代原来的 patch-ohos-ability.ps1）。该脚本在
+      # beforeBuildCommand 里执行，而 ohpm install 在构建中途才跑，首次构建会因
+      # oh_modules 不存在而跳过补丁。
+      - name: Install ohpm dependencies
+        if: matrix.platform == 'ohos'
+        run: |
+          cd src-tauri/gen/ohos
+          ohpm install
+        env:
+          OHOS_HOME: ${{ env.OHOS_NDK_HOME }}
+          HOS_SDK_HOME: ${{ env.HOS_SDK_HOME }}
+
+      # 显式先跑 prepare-ohos.mjs：vendored tauri-cli 的 ohos build 用
+      # Target::Android 加载平台配置（open_harmony/build.rs），tauri.ohos.conf.json
+      # 的 beforeBuildCommand 不会被读取，因此 back-key / domStorageAccess 补丁
+      # 必须在此处显式应用，再构建 HAP。
+      - name: Apply OHOS back-key patch
+        if: matrix.platform == 'ohos'
+        run: node scripts/prepare-ohos.mjs
+
+      - name: Build OHOS HAP
+        if: matrix.platform == 'ohos'
+        run: cargo tauri ohos build
+        env:
+          OHOS_HOME: ${{ env.OHOS_NDK_HOME }}
+          OHOS_NDK_HOME: ${{ env.OHOS_NDK_HOME }}
+          HOS_SDK_HOME: ${{ env.HOS_SDK_HOME }}
+          # 覆盖 src-tauri/.cargo/config.toml 里写死的 Windows 本机 NDK 路径
+          # （cargo 的 [env] 默认 non-force：环境变量已存在时优先用环境变量）。
+          # ohrs 自己会设置 linker，这里再兜底一遍。
+          CC_aarch64_unknown_linux_ohos: ${{ env.OHOS_NDK_HOME }}/native/llvm/bin/clang
+          CC_x86_64_unknown_linux_ohos: ${{ env.OHOS_NDK_HOME }}/native/llvm/bin/clang
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER: ${{ env.OHOS_NDK_HOME }}/native/llvm/bin/clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_OHOS_LINKER: ${{ env.OHOS_NDK_HOME }}/native/llvm/bin/clang
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      # 断言 prepare-ohos.mjs 把 back-key 补丁真正应用进了构建产物：
+      # MainPage.ets 必须含 onBackPress（back-key 处理），DefaultWebview.ets
+      # 必须含 domStorageAccess（zustand persist 的 localStorage）。
+      # ohpm 可能把包装到 entry/oh_modules 或根 oh_modules，脚本对两个位置都
+      # 打补丁，这里对**所有存在的位置**都断言（与 scripts/ohos-prepare-core.mjs
+      # 的 packageRootsFor 顺序保持一致）。
+      - name: Assert OHOS back-key patch applied
+        if: matrix.platform == 'ohos'
+        run: |
+          found_any=0
+          for base in \
+            src-tauri/gen/ohos/entry/oh_modules/@ohos-rs/ability/src/main/ets \
+            src-tauri/gen/ohos/oh_modules/@ohos-rs/ability/src/main/ets; do
+            if [ -d "$base" ]; then
+              found_any=1
+              grep -q 'onBackPress' "$base/components/MainPage.ets" \
+                || { echo "FAIL: $base/components/MainPage.ets missing onBackPress (back-key patch not applied)"; exit 1; }
+              grep -q 'domStorageAccess' "$base/webview/DefaultWebview.ets" \
+                || { echo "FAIL: $base/webview/DefaultWebview.ets missing domStorageAccess"; exit 1; }
+              echo "OK: back-key patch content present in $base"
+            fi
+          done
+          [ "$found_any" -eq 1 ] \
+            || { echo "FAIL: @ohos-rs/ability package not found under src-tauri/gen/ohos"; exit 1; }
+
+      - name: List HAP artifacts
+        if: matrix.platform == 'ohos'
+        run: find src-tauri/gen/ohos -name '*.hap'
+
+      # ==================================
+
+      - name: Normalize artifact filenames
+        run: node scripts/normalize-artifact-names.mjs
+
+      - name: Upload updater manifest
+        if: contains(fromJSON('["macos", "ubuntu", "windows"]'), matrix.platform)
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-manifest-${{ matrix.platform }}
+          path: src-tauri/target/release/bundle/**/*.sig
+          if-no-files-found: ignore
+
+      - name: Create Android Release
+        if: ${{ matrix.platform == 'android' && startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ANDROID_RELEASE_APK }}
+
+      - name: Create OHOS Release
+        if: ${{ matrix.platform == 'ohos' && startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/gen/ohos/**/*.hap
+
+      - name: Create Release
+        if: ${{ matrix.platform != 'android' && matrix.platform != 'ohos' && startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.rpm
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.dmg
+            ios-release-artifacts/*.ipa
+
+      - name: Upload Android artifact (Push / PR)
+        if: ${{ matrix.platform == 'android' && !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-artifact
+          path: ${{ env.ANDROID_RELEASE_APK }}
+          if-no-files-found: error
+
+      - name: Upload OHOS HAP (Push / PR)
+        if: ${{ matrix.platform == 'ohos' && !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohos-hap
+          path: src-tauri/gen/ohos/**/*.hap
+          if-no-files-found: error
+
+      - name: Upload Tauri artifact (Push / PR)
+        if: ${{ matrix.platform != 'android' && matrix.platform != 'ohos' && !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-artifact
+          path: |
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.rpm
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.dmg
+            ios-release-artifacts/*.ipa
+            src-tauri/gen/apple/build/**/*.app
+          if-no-files-found: error
+
+  merge-updater-manifest:
+    name: Merge updater manifests
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download updater manifests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: updater-manifest-*
+          merge-multiple: true
+          path: updater-manifests
+
+      - name: Merge manifests into latest.json
+        run: |
+          mkdir -p updater-manifests
+          node scripts/merge-updater-json.cjs updater-manifests
+
+      - name: Upload latest.json to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: latest.json

@@ -1,0 +1,1009 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* These files are bundled with the app so the interface keeps its intended
+   typography without a runtime dependency on Google Fonts. See
+   public/fonts/LICENSES.md for the font licenses. */
+@font-face {
+  font-family: 'Moke Inter';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/inter-latin-variable.woff2') format('woff2');
+}
+
+/* The bundled subset covers the app's Chinese copy plus common GB2312
+   characters, keeping the font compact. Other characters gracefully fall
+   back to the operating system font. Browsers synthesize intermediate weights
+   from the bundled regular face. */
+@font-face {
+  font-family: 'Moke Noto Sans SC';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/noto-sans-sc-regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Moke Noto Serif SC';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/noto-serif-sc-regular.woff2') format('woff2');
+}
+
+@layer base {
+  :root {
+    --background: 47 53% 97%;
+    --foreground: 240 1% 18%;
+    --card: 36 33% 94%;
+    --card-foreground: 240 1% 18%;
+    --primary: 33 35% 57%;
+    --primary-foreground: 0 0% 100%;
+    --muted: 43 28% 90%;
+    --muted-foreground: 27 4% 53%;
+    --accent: 42 30% 92%;
+    --accent-foreground: 240 1% 18%;
+    --destructive: 6 63% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 83 19% 46%;
+    --success-foreground: 0 0% 100%;
+    --border: 35 21% 89%;
+    --input: 42 30% 92%;
+    --ring: 33 35% 57%;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --background: 36 12% 9%;
+    --foreground: 40 20% 92%;
+    --card: 36 12% 13%;
+    --card-foreground: 40 20% 92%;
+    --primary: 33 40% 42%;
+    --primary-foreground: 0 0% 100%;
+    --muted: 36 10% 18%;
+    --muted-foreground: 35 8% 62%;
+    --accent: 36 10% 16%;
+    --accent-foreground: 40 20% 92%;
+    --destructive: 6 63% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 83 19% 56%;
+    --success-foreground: 0 0% 100%;
+    --border: 35 10% 22%;
+    --input: 36 10% 16%;
+    --ring: 33 40% 42%;
+  }
+
+  html, body {
+    font-family: 'Moke Inter', 'Moke Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* A native app shell should pan and scroll normally without exposing the
+     browser's pinch-to-zoom canvas. The web deployment keeps browser zoom for
+     accessibility, and Readest owns its separate document and zoom behavior. */
+  html[data-moke-native-app],
+  html[data-moke-native-app] body,
+  html[data-moke-native-app] .moke-app-root {
+    touch-action: pan-x pan-y;
+  }
+
+  .moke-app-root {
+    min-height: 100dvh;
+  }
+
+  /* Keep the page background edge-to-edge, but move its actual contents below
+     the Android/iOS status bar. OHOS never receives the runtime attribute and
+     therefore keeps its native, already-inset layout unchanged. */
+  [data-moke-top-safe-area] {
+    --moke-top-safe-area: env(safe-area-inset-top, 0px);
+  }
+
+  [data-moke-top-safe-area] .moke-app-root > :first-child {
+    padding-top: var(--moke-top-safe-area);
+  }
+
+  ::selection {
+    background: rgba(184, 149, 106, 0.25);
+  }
+}
+
+@layer utilities {
+  .font-serif {
+    font-family: 'Moke Noto Serif SC', 'Songti SC', 'STSong', serif;
+  }
+}
+
+/* ===== Dark theme ===== */
+/* Semantic Tailwind tokens (bg-background / text-foreground / bg-primary /
+   bg-muted / border-border / ...) flip automatically via the CSS variables in
+   @layer base. The rules below dark-adapt the hardcoded warm recipe used across
+   pages — translucent white glass surfaces, amber hairline borders, amber tint
+   fills, status colors — mirroring the [data-eink] convention below.
+   E-ink and dark mode are mutually exclusive at the runtime level (layout.tsx
+   never adds the .dark class while data-eink='true'), so these rules and the
+   e-ink rules below can never apply to the same element at the same time.
+
+   These use exact class-token matching ([class~='...']) instead of substring
+   matching so a static token (bg-white/70) never leaks into hover/focus
+   variants (hover:bg-white/70) — rows that are transparent at rest and only
+   turn translucent on hover keep that behaviour in dark mode.
+
+   MAINTENANCE CONSTRAINT: every color/opacity token enumerated below is an
+   explicit allow-list. When a component introduces a NEW shade of an
+   enumerated family (e.g. bg-white/20, border-primary/45, text-amber-800),
+   it will silently render as an un-dark-adapted bright/colored surface in
+   dark mode — no error, no warning. Always add the new token to the matching
+   block below (or to the e-ink rules) when you add it in a component.
+   Layer note: these rules are unlayered + !important, which beats plain
+   utilities but loses to any dark:!* important utility on the same element,
+   and a plain dark:* variant will be overridden by them — if you need a
+   per-element dark:* override here, exclude the exact token first (as the
+   colored-text block does with :not([class~='dark:text-...'])). */
+.dark [class~='bg-white/95'] {
+  background-color: rgba(28, 26, 22, 0.97) !important;
+}
+.dark [class~='bg-white/80'] {
+  background-color: rgba(30, 27, 23, 0.85) !important;
+}
+.dark [class~='bg-white/70'] {
+  background-color: rgba(30, 27, 23, 0.78) !important;
+}
+.dark [class~='bg-white/65'] {
+  background-color: rgba(30, 27, 23, 0.75) !important;
+}
+.dark [class~='bg-white/60'] {
+  background-color: rgba(30, 27, 23, 0.72) !important;
+}
+.dark [class~='bg-white/55'] {
+  background-color: rgba(30, 27, 23, 0.65) !important;
+}
+.dark [class~='bg-white/50'] {
+  background-color: rgba(30, 27, 23, 0.6) !important;
+}
+.dark [class~='bg-white/40'] {
+  background-color: rgba(30, 27, 23, 0.5) !important;
+}
+.dark [class~='bg-white/35'] {
+  background-color: rgba(30, 27, 23, 0.45) !important;
+}
+.dark [class~='bg-white/25'] {
+  background-color: rgba(30, 27, 23, 0.35) !important;
+}
+/* Low-opacity bg-white/15/10/5 only appear inside .moke-sidebar, whose dark
+   theme is handled in the sidebar block below — no general rule needed here. */
+/* Warm translucent header / glass surfaces (bg-[#fffdf8]/80) → dark surface.
+   Exact token match, consistent with the [class~=] convention elsewhere. */
+.dark [class~='bg-[#fffdf8]/80'] {
+  background-color: rgba(26, 24, 20, 0.8) !important;
+}
+/* Warm hairline borders (border-amber-950/10 etc.) → light hairline. Only the
+   static tokens; the hover: variants get their own rules below. */
+.dark [class~='border-amber-950/10'],
+.dark [class~='border-amber-950/20'],
+.dark [class~='border-amber-950/5'] {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+.dark [class*='divide-amber-950/'] > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+.dark [class~='hover:border-amber-950/10']:hover,
+.dark [class~='hover:border-amber-950/20']:hover {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+/* Amber tint fills (Select hover/selected, context menu, tags). Exact tokens
+   only, so unselected options carrying just a hover:bg-amber-50/* stay clear
+   at rest and get the tint only on hover. */
+.dark [class~='bg-amber-50'],
+.dark [class~='bg-amber-50/40'],
+.dark [class~='bg-amber-50/60'],
+.dark [class~='bg-amber-50/70'],
+.dark [class~='bg-amber-100/70'],
+.dark [class~='bg-amber-500/10'] {
+  background-color: rgba(184, 149, 106, 0.18) !important;
+}
+.dark [class~='hover:bg-amber-50/40']:hover,
+.dark [class~='hover:bg-amber-50/60']:hover,
+.dark [class~='hover:bg-amber-50/70']:hover,
+.dark [class~='hover:bg-amber-100/70']:hover {
+  background-color: rgba(184, 149, 106, 0.24) !important;
+}
+/* Hover/focus of translucent-white surfaces: elevate each shade a step above
+   its resting dark surface so the hover affordance survives in dark mode.
+   Only the shades actually used as hover/focus targets are listed; the pure
+   hover:bg-white/focus:bg-white (inputs, Select trigger) gets a near-solid
+   dark. Sidebar hover tints are overridden in the sidebar block below. */
+.dark [class~='hover:bg-white/80']:hover {
+  background-color: rgba(44, 40, 34, 0.9) !important;
+}
+.dark [class~='hover:bg-white/70']:hover {
+  background-color: rgba(44, 40, 34, 0.85) !important;
+}
+.dark [class~='hover:bg-white/65']:hover {
+  background-color: rgba(44, 40, 34, 0.82) !important;
+}
+.dark [class~='hover:bg-white/55']:hover {
+  background-color: rgba(44, 40, 34, 0.72) !important;
+}
+.dark [class~='hover:bg-white']:hover,
+.dark [class~='focus:bg-white']:focus {
+  background-color: rgba(44, 40, 34, 0.92) !important;
+}
+/* Status pills (extensions / reset-password / context menu). */
+.dark [class~='bg-green-50'] {
+  background-color: rgba(122, 139, 94, 0.15) !important;
+}
+.dark [class~='border-green-200'] {
+  border-color: rgba(122, 139, 94, 0.4) !important;
+}
+.dark [class~='bg-green-500/10'] {
+  background-color: rgba(122, 139, 94, 0.2) !important;
+}
+.dark [class~='border-green-500/30'] {
+  border-color: rgba(122, 139, 94, 0.5) !important;
+}
+.dark [class~='bg-blue-50'] {
+  background-color: rgba(90, 120, 180, 0.15) !important;
+}
+.dark [class~='bg-red-50'] {
+  background-color: rgba(192, 57, 43, 0.15) !important;
+}
+.dark [class~='hover:bg-red-50']:hover {
+  background-color: rgba(192, 57, 43, 0.2) !important;
+}
+.dark [class~='hover:bg-green-50']:hover {
+  background-color: rgba(122, 139, 94, 0.2) !important;
+}
+/* text-primary / text-primary/N are used both as button-surface
+   primary-foreground (white text, keep) and as emphasis text (small captions,
+   links, card-title hover). The dark-mode --primary is tuned for surfaces
+   (contrast vs white), which makes it too dark as text on the dark bg (~2.5-3:1).
+   Lighten the emphasis-text usages only — never text-primary-foreground.
+   Exact tokens only ([class~=]) so hover:/group-hover:/dark: variants of
+   text-primary/N stay out of scope (consistent with the convention below). */
+.dark [class~='text-primary'],
+.dark [class~='text-primary/80'] {
+  color: #d9b48f !important;
+}
+/* group-hover:text-primary only fires when the parent .group is hovered;
+   Tailwind's own rule targets `.group:hover ...`, so mirror it here instead of
+   a plain :hover which would miss hovering elsewhere on the card. */
+.dark .group:hover [class~='group-hover:text-primary'] {
+  color: #d9b48f !important;
+}
+
+/* border-primary/N, ring-primary/N, bg-primary/N: the dark --primary is tuned
+   for solid surfaces (white text on a button); as a hairline/focus ring/soft
+   fill against the dark background it is almost invisible (~2.5:1 or less),
+   which weakens focus, selection and hover affordances. Lighten these too,
+   matching the emphasis-text treatment. Exact tokens for border/ring; the
+   bg-primary/N fills use the /10,/15,/5,90 shades that actually appear. */
+.dark [class~='border-primary'],
+.dark [class~='border-primary/60'],
+.dark [class~='border-primary/40'],
+.dark [class~='border-primary/30'],
+.dark [class~='border-primary/20'],
+.dark [class~='border-primary/15'] {
+  border-color: rgba(217, 180, 143, 0.55) !important;
+}
+.dark [class~='ring-primary/60'],
+.dark [class~='ring-primary/40'] {
+  --tw-ring-color: rgba(217, 180, 143, 0.55) !important;
+}
+.dark [class~='bg-primary/15'],
+.dark [class~='bg-primary/10'],
+.dark [class~='bg-primary/5'] {
+  background-color: rgba(217, 180, 143, 0.16) !important;
+}
+.dark [class~='group-hover:border-primary/30']:hover,
+.dark [class~='group-hover:border-primary/20']:hover {
+  border-color: rgba(217, 180, 143, 0.6) !important;
+}
+.dark [class~='group-hover:ring-primary/40']:hover {
+  --tw-ring-color: rgba(217, 180, 143, 0.6) !important;
+}
+.dark [class~='focus:border-primary/60']:focus {
+  border-color: rgba(217, 180, 143, 0.7) !important;
+}
+/* Colored text: dark shades (amber-600/700, green-600, red-600, ...) lose
+   contrast on the dark background — lighten them. Only the shades actually
+   used in the app are enumerated (amber-400/500/600/700, green-400/600,
+   emerald-600, red-600, rose-500, blue-700) so light shades like
+   text-amber-400 / text-green-400 keep their brightness, two-state
+   hover:text-* transitions aren't flattened, and any existing Tailwind
+   dark:text-* variant on the same element keeps working.
+   Guard note: we exclude only the exact dark:text-* tokens that actually
+   exist (dark:text-amber-400, dark:text-green-400) so the Tailwind utility
+   wins. A future hover or group-hover variant of dark:text-* on the same
+   element is a different token and won't disable the resting lightening. */
+.dark [class~='text-amber-700']:not([class~='dark:text-amber-400']),
+.dark [class~='text-amber-600']:not([class~='dark:text-amber-400']),
+.dark [class~='text-amber-500']:not([class~='dark:text-amber-400']) {
+  color: #e2b97c !important;
+}
+.dark [class~='text-green-600']:not([class~='dark:text-green-400']) {
+  color: #9dbb7a !important;
+}
+.dark [class~='text-green-400'] {
+  color: #a5c888 !important;
+}
+.dark [class~='text-emerald-600'] {
+  color: #8fbe9c !important;
+}
+.dark [class~='text-red-600'] {
+  color: #e07a6e !important;
+}
+.dark [class~='text-rose-500'] {
+  color: #e58a9a !important;
+}
+.dark [class~='text-blue-700'] {
+  color: #8faad9 !important;
+}
+/* Warm translucent "glass" / gradient page shells. */
+.dark .app-warm-bg {
+  background:
+    radial-gradient(circle at top left, rgba(184, 149, 106, 0.1), transparent 32%),
+    linear-gradient(180deg, #201d19 0%, #1c1a16 44%, #171512 100%);
+}
+.dark .app-glass {
+  background: rgba(30, 27, 23, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 24px 70px -45px rgba(0, 0, 0, 0.8);
+}
+.dark .app-card {
+  background: rgba(30, 27, 23, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 18px 50px -40px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.dark .moke-shelf-bg {
+  background:
+    radial-gradient(circle at top left, rgba(184, 149, 106, 0.1), transparent 32%),
+    linear-gradient(180deg, #201d19 0%, #1c1a16 44%, #171512 100%) !important;
+}
+.dark .eink-bordered {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+/* Book-cover containers use solid bg-white as the surface behind the cover
+   image; in dark mode the white flashes during lazy-load / failed / fallback.
+   Scope to .book-cover-shadow (the cover container) — NOT a global bg-white
+   rule, which would also repaint the white Toggle knobs. ring-black/5 is
+   softened to a dark hairline too. */
+.dark .book-cover-shadow {
+  background-color: hsl(var(--card)) !important;
+  --tw-ring-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+/* Dark sidebar: in light mode the sidebar is the warm-brown bg-primary bar
+   with white text. In dark mode the (lightened) primary brown would read as a
+   glaring light slab, so the sidebar becomes a deep warm dark panel with a
+   right hairline, keeping the primary-brown as the active-item highlight.
+   The white-based text/icon classes (text-primary-foreground, text-white/N)
+   already work against a dark background, so only the surface + hairlines
+   need overriding here. */
+.dark .moke-sidebar {
+  background: hsl(36 12% 12%) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+.dark .moke-sidebar :where(.border-white\/10) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+.dark .moke-sidebar :where(.bg-white\/10) {
+  background-color: rgba(184, 149, 106, 0.22) !important;
+}
+.dark .moke-sidebar :where(.bg-white\/15) {
+  background-color: rgba(184, 149, 106, 0.3) !important;
+}
+.dark .moke-sidebar :where(.bg-white\/5) {
+  background-color: rgba(255, 255, 255, 0.06) !important;
+}
+.dark .moke-sidebar :where(.text-white\/55) {
+  color: rgba(255, 255, 255, 0.6) !important;
+}
+.dark .moke-sidebar :where(.text-white\/45) {
+  color: rgba(255, 255, 255, 0.55) !important;
+}
+.dark .moke-sidebar :where(.text-white\/30) {
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+/* Sidebar hover targets are hover:bg-white/15 (登录按钮) and
+   hover:bg-white/5 (导航项). The general hover rules above don't cover the
+   /15 and /5 shades, so give the sidebar its own warm hover so it never
+   falls back to a white flash or the generic dark surface. */
+.dark .moke-sidebar :where(.hover\:bg-white\/15):hover,
+.dark .moke-sidebar :where(.hover\:bg-white\/5):hover {
+  background-color: rgba(184, 149, 106, 0.3) !important;
+}
+
+/* ===== E-ink rendering ===== */
+/* Auto path: native media features, no JS, no hydration flash.
+   (update: slow) = slow-refresh displays (most e-ink); (max-color: 1) = monochrome
+   (Kindle). (prefers-reduced-motion) is for motion-sensitive users on normal
+   screens, so it only kills motion — not color/radius. */
+@media (update: slow), (max-color: 1) {
+  html, body {
+    background: #FFFFFF !important;
+    color: #000000 !important;
+    -webkit-font-smoothing: none !important;
+    -moz-osx-font-smoothing: unset !important;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+    backdrop-filter: none !important;
+    box-shadow: none !important;
+  }
+  img {
+    filter: grayscale(100%) contrast(1.15) !important;
+  }
+  .app-warm-bg, .app-glass, .app-card {
+    background: #FFFFFF !important;
+    border: 1px solid #000000 !important;
+    box-shadow: none !important;
+  }
+  ::selection {
+    background: #000000 !important;
+    color: #FFFFFF !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+[data-eink='true'] .moke-sidebar-active-indicator,
+[data-eink='true'] .moke-tab-active-indicator {
+  transition: none !important;
+}
+
+/* Moke and the embedded Readest frontend are separate same-origin documents.
+   Cross-document opt-in is necessarily document-wide, so layout.tsx skips all
+   transitions except mobile Readest -> Moke exits. Suppress the browser's
+   default fade as a second guard for startup redirects and unrelated routes. */
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* Moke BACK is handled inside a Tauri WebView on both desktop and mobile. The
+   View Transition snapshots put the already-rendered parent page underneath
+   the current page, then animate only the current page out to the right. */
+html.moke-native-back-transition::view-transition-old(root),
+html[data-moke-reader-transition='exit']::view-transition-old(root) {
+  animation-duration: 260ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  animation-fill-mode: both;
+  mix-blend-mode: normal;
+  z-index: 2;
+  animation-name: moke-native-back-exit;
+  box-shadow: -12px 0 32px rgba(37, 30, 20, 0.16);
+}
+
+html.moke-native-back-transition::view-transition-new(root),
+html[data-moke-reader-transition='exit']::view-transition-new(root) {
+  z-index: 1;
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+@keyframes moke-native-back-exit {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce), (update: slow), (max-color: 1) {
+  html[data-moke-reader-transition='exit']::view-transition-old(root) {
+    animation: none !important;
+    box-shadow: none !important;
+  }
+}
+
+html[data-eink='true'][data-moke-reader-transition='exit']::view-transition-old(root) {
+  animation: none !important;
+  box-shadow: none !important;
+}
+
+/* Manual override: force ink mode on any device via the Settings toggle.
+   Uses the same [data-eink='true'] signal as the readest reader so the Moke
+   bridge (window.__MOKE_EINK) and the reader share one convention. */
+[data-eink='true'], [data-eink='true'] body {
+  background: #FFFFFF !important;
+  color: #000000 !important;
+  -webkit-font-smoothing: none !important;
+  -moz-osx-font-smoothing: unset !important;
+}
+[data-eink='true'] *, [data-eink='true'] *::before, [data-eink='true'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+[data-eink='true'] img {
+  filter: grayscale(100%) contrast(1.15) !important;
+}
+[data-eink='true'] .app-warm-bg,
+[data-eink='true'] .app-glass,
+[data-eink='true'] .app-card {
+  background: #FFFFFF !important;
+  border: 1px solid #000000 !important;
+  box-shadow: none !important;
+}
+[data-eink='true'] ::selection {
+  background: #000000 !important;
+  color: #FFFFFF !important;
+}
+
+/* Sidebar is a full-height bg-primary bar; in e-ink the brown collapses to a
+   gray smear and the white text/active states lose all contrast. Invert to a
+   white column with a 1px right border, and flip the white text to black so
+   the active item (bg-white/10) still reads as a gray fill on white. */
+[data-eink='true'] .moke-sidebar {
+  background: #FFFFFF !important;
+  border-right: 1px solid #000000 !important;
+}
+[data-eink='true'] .moke-sidebar :where(.text-primary-foreground, .text-white) {
+  color: #000000 !important;
+}
+[data-eink='true'] .moke-sidebar :where(.text-white\/55, .text-white\/30, .text-white\/45) {
+  color: #555555 !important;
+}
+[data-eink='true'] .moke-sidebar :where(.border-white\/10) {
+  border-color: #000000 !important;
+}
+
+/* eink-bordered: a three-state shared hairline/boundary class (the name is
+   historical — it is NOT e-ink-only):
+   - light theme: warm translucent 1px hairline (rgba(74,57,35,0.1));
+   - dark theme: 1px white hairline (see .dark .eink-bordered above);
+   - e-ink:      1px solid black border + flat white surface (below).
+   Components use it as a neutral "visible panel boundary" hook; adjust the
+   three states together if the visual contract changes. */
+.eink-bordered {
+  border-width: 1px;
+  border-color: rgba(74, 57, 35, 0.1);
+}
+[data-eink='true'] .eink-bordered {
+  border-color: #000000;
+  background: #FFFFFF;
+}
+
+/* System-wide flatten of the warm translucent "glass" recipe used by every
+   page (shelf/library/history headers, cards, empty-state blobs). These use
+   inline bg-white/N + backdrop-blur rather than the .app-glass class, so they
+   aren't caught above. On e-ink the translucency shows content behind and the
+   blur smears; force solid white + a 1px border for delineation. Substring
+   matchers mirror readest's [class*='...'] e-ink rules. */
+[data-eink='true'] [class*='bg-white/'],
+[data-eink='true'] [class*='bg-[#fffdf8]/'] {
+  background-color: #FFFFFF !important;
+}
+[data-eink='true'] header {
+  background: #FFFFFF !important;
+  border-bottom: 1px solid #000000 !important;
+  backdrop-filter: none !important;
+}
+/* Decorative gradient overlays / blur blobs: invisible value on e-ink, just smear. */
+[data-eink='true'] [class*='blur-2xl'],
+[data-eink='true'] [class*='from-white/'],
+[data-eink='true'] [class*='from-black/'] {
+  display: none !important;
+}
+/* Primary CTA (bg-primary): brown collapses to gray with white text. Invert to
+   white + 1px border + black label so the action stays distinct (readest's
+   [data-eink] .bg-primary rule). */
+[data-eink='true'] .bg-primary {
+  background-color: #FFFFFF !important;
+  border: 1px solid #000000 !important;
+  color: #000000 !important;
+}
+
+/* Exact soft-fill and semantic-token variants used by annotation status UI.
+   Exact class-token matching avoids catching hover:bg-* variants and leaking a
+   persistent fill into their resting state. */
+[data-eink='true'] [class~='bg-primary/10'],
+[data-eink='true'] [class~='bg-primary/15'],
+[data-eink='true'] [class~='bg-amber-500/10'] {
+  background-color: #E5E5E5 !important;
+}
+[data-eink='true'] [class~='text-destructive'] {
+  color: #000000 !important;
+}
+[data-eink='true'] .bg-primary [class~='text-primary-foreground'],
+[data-eink='true'] [class~='bg-primary/15'] [class~='text-primary-foreground'] {
+  color: #000000 !important;
+}
+[data-eink='true'] [class~='bg-destructive/10'] {
+  background-color: #FFFFFF !important;
+}
+[data-eink='true'] [class~='border-destructive/30'],
+[data-eink='true'] [class~='border-amber-500/30'] {
+  border-color: #000000 !important;
+}
+
+/* text-primary / text-primary/N: warm brown accent text (used for captions
+   like "共 13 本藏书", "探索书库", the small label above the page title).
+   The 80/60 opacity variants are too low-contrast on white-on-white. Force
+   solid black so the caption stays readable. */
+[data-eink='true'] .text-primary,
+[data-eink='true'] [class*='text-primary/'] {
+  color: #000000 !important;
+}
+
+/* border-amber-950/N: the standard warm 1px border used on cards, headers,
+   the ViewModeToggle container, and — critically — the Select dropdown
+   panel and the right-click BookContextMenu (both use `border-amber-950/10`
+   for a hairline frame). On e-ink the faint warm tint disappears, leaving
+   the panels borderless against the white background. Force solid black
+   for crisp 1px outlines. */
+[data-eink='true'] [class*='border-amber-950/'] {
+  border-color: #000000 !important;
+}
+
+/* Warm amber hover backgrounds (used in Select options, BookContextMenu
+   items, etc.) translate to a near-invisible tint on e-ink. Keep the hover
+   affordance visible by swapping to a clear gray. */
+[data-eink='true'] [class*='hover:bg-amber-']:hover,
+[data-eink='true'] [class*='hover:bg-amber-']:focus-visible {
+  background-color: #E5E5E5 !important;
+}
+/* Same treatment for hover:bg-muted*: the warm light-gray hover tint
+   (`bg-muted` = #EDE9DF at various opacities) is barely visible on
+   white in e-ink. The :hover pseudo-class keeps it scoped to the
+   interactive moment (the persistent bg-muted rule above already
+   handles the non-hover case). Used by settings rows, history page
+   links, about/contributors cards, library pagination, etc. */
+[data-eink='true'] [class*='hover:bg-muted']:hover,
+[data-eink='true'] [class*='hover:bg-muted']:focus-visible {
+  background-color: #E5E5E5 !important;
+}
+/* The currently-selected option in the Select uses `bg-amber-50/40` (a
+   persistent, not hover, fill). The faint tint is invisible on e-ink —
+   invert to a solid gray so the selected row still stands out.
+   Excludes `hover:bg-amber-50/40` (BookTable rows would otherwise show
+   persistent gray because the substring `bg-amber-50/40` matches the
+   hover variant too). */
+[data-eink='true'] [class*='bg-amber-50/40']:not([class*='hover:bg-amber-50/40']) {
+  background-color: #E5E5E5 !important;
+}
+
+/* text-foreground / text-foreground/N: the primary text color (#2C2C2E).
+   The body color override doesn't reach it because the class sets an
+   explicit color, so leave an explicit rule. */
+[data-eink='true'] .text-foreground,
+[data-eink='true'] [class*='text-foreground/'] {
+  color: #000000 !important;
+}
+/* text-muted-foreground / text-muted-foreground/N: the secondary text color
+   (#8B8682, a warm gray). On e-ink the warm tint washes out and the
+   50%-gray value is too low contrast — bump to #555555 (matches the
+   .moke-sidebar convention for muted white-on-dark text). */
+[data-eink='true'] .text-muted-foreground,
+[data-eink='true'] [class*='text-muted-foreground/'] {
+  color: #555555 !important;
+}
+/* border-foreground / border-foreground/N: the dark gray used as a border
+   for selected/active elements (e.g. the active tab in the history page,
+   which uses `border-foreground bg-muted text-foreground` to signal
+   selection). On e-ink the dark gray border is still visible against
+   white, but matching it to the text-foreground (black) gives a stronger,
+   more consistent outline. */
+[data-eink='true'] .border-foreground,
+[data-eink='true'] [class*='border-foreground/'] {
+  border-color: #000000 !important;
+}
+/* bg-muted / bg-muted/N: the warm light-gray surface used for icon
+   containers, active-tab fills, list-item backgrounds, and various
+   "muted" grouping surfaces (#EDE9DF, near-invisible on white in e-ink).
+   Force a visible neutral gray so the surfaces still read as
+   "non-white".
+   Excludes:
+   - `hover:bg-muted*` (settings rows etc. would otherwise show persistent
+     gray because the substring `bg-muted` matches the hover variant too)
+   - `bg-muted-foreground*` (the toggle's unchecked state uses
+     `bg-muted-foreground/30`; that should stay as its own state color,
+     not get repainted as a "muted surface") */
+[data-eink='true'] [class*='bg-muted']:not([class*='hover:bg-muted']):not([class*='bg-muted-foreground']) {
+  background-color: #E5E5E5 !important;
+}
+
+/* bg-background/N: the page-background color (#FBF9F2, the warm cream).
+   The cream tint collapses to near-white on e-ink but the undertones
+   make it dirty-looking. Force solid white so cards / chips on the
+   cream page read as the same surface as the page. Used in the user
+   page history cards, QuickLink cards, etc. */
+[data-eink='true'] [class*='bg-background/'] {
+  background-color: #FFFFFF !important;
+}
+
+/* border-border/N: the standard light-gray border (#E8E3DC, very subtle
+   in normal mode). Near-invisible on white in e-ink — force solid black
+   for crisp 1px outlines. Used by the user page history cards, QuickLink
+   cards, InfoCard icons, settings section dividers, etc. */
+[data-eink='true'] [class*='border-border/'],
+[data-eink='true'] .border-border {
+  border-color: #000000 !important;
+}
+
+/* border-primary/N: brown accent border (used on hover for "查看全部"
+   link, history card icon containers, etc.). The brown collapses to a
+   muddy gray on e-ink; force black for the same contrast story as
+   border-foreground. */
+[data-eink='true'] [class*='border-primary/'] {
+  border-color: #000000 !important;
+}
+
+/* Loading spinners: the ring is border-primary/20 (shelf) or
+   border-muted-foreground/20 (everywhere else) with a border-t-primary
+   rotating segment. The border-primary/20 rule above would flatten both the
+   ring and the segment to black — an invisible "solid black disc" that no
+   longer reads as a spinner. Restore the classic e-ink spinner look: a light
+   gray ring with a solid black rotating segment, and give the gray-ring
+   spinners the same treatment (they were left fully colored before). */
+[data-eink='true'] [class*='animate-spin'][class*='border-primary/'],
+[data-eink='true'] [class*='animate-spin'][class*='border-muted-foreground/'] {
+  border-color: #E5E5E5 !important;
+}
+[data-eink='true'] [class*='animate-spin'][class*='border-t-primary'] {
+  border-top-color: #000000 !important;
+}
+
+/* from-primary / via-primary / to-primary: brown-gradient avatar /
+   icon containers (e.g. the user page profile avatar). The brown
+   gradient collapses to a muddy gray on e-ink; invert to solid black
+   so the avatar still reads as a distinct "primary" surface (matches
+   the inverted .bg-primary e-ink convention). text-primary-foreground
+   (white) on the inverted black background stays readable. */
+[data-eink='true'] [class*='from-primary'],
+[data-eink='true'] [class*='via-primary'],
+[data-eink='true'] [class*='to-primary'] {
+  background: #000000 !important;
+}
+
+/* Shelf empty-state icon circle (shelf/page.tsx): it uses a
+   from-primary/15 -> to-amber-200/40 gradient with a text-primary Search
+   icon. The from-primary rule above would turn it black-on-black (invisible
+   icon), so give the circle an explicit white surface + black inset ring +
+   black icon. Written as unlayered !important (same as the rest of the e-ink
+   block) rather than a Tailwind eink: variant, so it reliably beats the
+   layered utilities regardless of how postcss-cascade-layers processes them.
+   Scope: only the /15 fade token, so the solid from-primary avatars above
+   keep their black-invert behaviour. */
+[data-eink='true'] [class*='from-primary/15'] {
+  background: #FFFFFF !important;
+  box-shadow: inset 0 0 0 1px #000000 !important;
+  color: #000000 !important;
+}
+
+/* All other colored book-cover placeholder gradients (the fallback
+   div shown when a cover image fails to load). The shelf page uses
+   heavy hues (emerald-800, amber-700, rose-700, indigo-700 at /20
+   opacity) and the library/search/BookTable use light grays
+   (slate-200, stone-200, zinc-200, etc.). On e-ink the colored
+   variants collapse to arbitrary gray smears and the gray variants
+   are so light they're invisible. Force a solid neutral gray
+   background so every placeholder reads as the same "no-cover"
+   surface, and the white initial/title text on top stays visible. */
+[data-eink='true'] [class*='from-emerald-'],
+[data-eink='true'] [class*='from-teal-'],
+[data-eink='true'] [class*='from-cyan-'],
+[data-eink='true'] [class*='from-amber-'],
+[data-eink='true'] [class*='from-yellow-'],
+[data-eink='true'] [class*='from-orange-'],
+[data-eink='true'] [class*='from-slate-'],
+[data-eink='true'] [class*='from-gray-'],
+[data-eink='true'] [class*='from-zinc-'],
+[data-eink='true'] [class*='from-stone-'],
+[data-eink='true'] [class*='from-neutral-'],
+[data-eink='true'] [class*='from-rose-'],
+[data-eink='true'] [class*='from-red-'],
+[data-eink='true'] [class*='from-pink-'],
+[data-eink='true'] [class*='from-indigo-'],
+[data-eink='true'] [class*='from-blue-'],
+[data-eink='true'] [class*='from-purple-'],
+[data-eink='true'] [class*='from-violet-'],
+[data-eink='true'] [class*='from-fuchsia-'],
+[data-eink='true'] [class*='from-sky-'],
+[data-eink='true'] [class*='from-lime-'],
+[data-eink='true'] [class*='from-green-'] {
+  background: #E5E5E5 !important;
+}
+
+/* Book-cover placeholder text: the inner span uses `text-white/75`
+   (or /70) in normal mode for contrast against the dark colored
+   gradient. After the rule above the parent is solid #E5E5E5, so
+   white-on-gray is ~1.2:1 — unreadable. Force the inner white text
+   to black. Scoped via descendant selector so this only fires for
+   text-white inside a colored-gradient cover placeholder (not for
+   the .moke-sidebar text-white/N, which has its own rule that
+   targets #555555, and not for the from-primary avatar text, which
+   is white-on-black after the from-primary rule). */
+[data-eink='true'] [class*='from-emerald-'] [class*='text-white/'],
+[data-eink='true'] [class*='from-amber-'] [class*='text-white/'],
+[data-eink='true'] [class*='from-rose-'] [class*='text-white/'],
+[data-eink='true'] [class*='from-indigo-'] [class*='text-white/'],
+[data-eink='true'] [class*='from-slate-'] [class*='text-white/'],
+[data-eink='true'] [class*='from-stone-'] [class*='text-white/'],
+[data-eink='true'] [class*='from-zinc-'] [class*='text-white/'],
+[data-eink='true'] [class*='from-gray-'] [class*='text-white/'],
+[data-eink='true'] [class*='from-neutral-'] [class*='text-white/'] {
+  color: #000000 !important;
+}
+
+/* All other colored text (text-{color}-{shade} where color is a
+   Tailwind hue like amber/rose/red/green/...) collapses to arbitrary
+   gray smears in e-ink and conveys no information. Used for decorative
+   section icons (e.g. about page "后续规划" Sparkles text-amber-500,
+   "贡献者" HeartHandshake text-rose-500), destructive (text-red-600),
+   success (text-emerald-600, text-green-600), info (text-blue-700), etc.
+   Force solid black in e-ink. */
+[data-eink='true'] [class*='text-amber-'],
+[data-eink='true'] [class*='text-rose-'],
+[data-eink='true'] [class*='text-red-'],
+[data-eink='true'] [class*='text-orange-'],
+[data-eink='true'] [class*='text-yellow-'],
+[data-eink='true'] [class*='text-lime-'],
+[data-eink='true'] [class*='text-green-'],
+[data-eink='true'] [class*='text-emerald-'],
+[data-eink='true'] [class*='text-teal-'],
+[data-eink='true'] [class*='text-cyan-'],
+[data-eink='true'] [class*='text-sky-'],
+[data-eink='true'] [class*='text-blue-'],
+[data-eink='true'] [class*='text-indigo-'],
+[data-eink='true'] [class*='text-violet-'],
+[data-eink='true'] [class*='text-purple-'],
+[data-eink='true'] [class*='text-fuchsia-'],
+[data-eink='true'] [class*='text-pink-'] {
+  color: #000000 !important;
+}
+
+/* Shelf page background is a warm radial+linear gradient (background-image),
+   not caught by the shadow/blur rules. Flatten to solid white on e-ink. */
+[data-eink='true'] .moke-shelf-bg {
+  background: #FFFFFF !important;
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .app-warm-bg {
+    background:
+      radial-gradient(circle at top left, rgba(184, 149, 106, 0.18), transparent 32%),
+      linear-gradient(180deg, #fffdf8 0%, #fbf9f2 44%, #f6f0e6 100%);
+  }
+  .app-glass {
+    background: rgba(255, 255, 255, 0.62);
+    border: 1px solid rgba(74, 57, 35, 0.1);
+    box-shadow: 0 24px 70px -45px rgba(74, 57, 35, 0.65);
+    backdrop-filter: blur(18px);
+  }
+  .app-card {
+    background: rgba(255, 255, 255, 0.58);
+    border: 1px solid rgba(74, 57, 35, 0.1);
+    box-shadow: 0 18px 50px -40px rgba(74, 57, 35, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(12px);
+  }
+  .book-cover-shadow {
+    box-shadow: 0 14px 28px -18px rgba(37, 30, 20, 0.9), 0 2px 8px rgba(37, 30, 20, 0.08);
+  }
+
+  /* Keep the transition selectors free of input-device media queries: Tauri's
+     Windows WebView can report hover/pointer capabilities inconsistently in
+     development. Manual e-ink mode is excluded at the selector level, while
+     auto-detected e-ink keeps its existing global 0.01ms override. */
+    html:not([data-eink='true']) .book-card-motion {
+      isolation: isolate;
+      transform: translate3d(0, 0, 0);
+      transition-property: transform, box-shadow, background-color, border-color !important;
+      transition-duration: 280ms, 280ms, 200ms, 200ms !important;
+      transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1), cubic-bezier(0.16, 1, 0.3, 1), ease, ease !important;
+    }
+
+    html:not([data-eink='true']) .book-card-motion:hover,
+    html:not([data-eink='true']) .book-card-motion:focus-visible {
+      transform: translate3d(0, -2px, 0);
+      box-shadow: 0 20px 42px -32px rgba(74, 57, 35, 0.62);
+    }
+
+    html:not([data-eink='true']) .book-card-motion:active {
+      transform: translate3d(0, -1px, 0) scale(0.995);
+      transition-duration: 100ms, 100ms, 100ms, 100ms !important;
+    }
+
+    html:not([data-eink='true']) .book-cover-motion {
+      transform-origin: 50% 100%;
+      will-change: transform;
+      transition-property: transform, box-shadow, filter !important;
+      transition-duration: 420ms, 420ms, 280ms !important;
+      transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1), cubic-bezier(0.16, 1, 0.3, 1), ease !important;
+    }
+
+    html:not([data-eink='true']) .book-card-motion:hover .book-cover-motion,
+    html:not([data-eink='true']) .book-card-motion:focus-visible .book-cover-motion {
+      transform: translate3d(0, -5px, 0) rotateX(1deg) rotateY(-0.6deg) scale(1.01);
+      box-shadow: 0 18px 32px -19px rgba(37, 30, 20, 0.62), 0 6px 14px -10px rgba(37, 30, 20, 0.2);
+      filter: saturate(1.04) contrast(1.015);
+    }
+
+    html:not([data-eink='true']) .book-cover-media {
+      transform: scale(1.001);
+      transition: transform 560ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+    }
+
+    html:not([data-eink='true']) .book-card-motion:hover .book-cover-media,
+    html:not([data-eink='true']) .book-card-motion:focus-visible .book-cover-media {
+      transform: scale(1.04);
+    }
+
+    html:not([data-eink='true']) .book-title-motion {
+      transition: color 180ms ease, transform 280ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+    }
+
+    html:not([data-eink='true']) .book-card-motion:hover .book-title-motion,
+    html:not([data-eink='true']) .book-card-motion:focus-visible .book-title-motion {
+      transform: translateX(1px);
+    }
+
+    html:not([data-eink='true']) .book-list-motion {
+      transition:
+        transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+        background-color 180ms ease,
+        border-color 180ms ease,
+        box-shadow 240ms ease !important;
+    }
+
+    html:not([data-eink='true']) .book-list-motion:hover,
+    html:not([data-eink='true']) .book-list-motion:focus-visible {
+      transform: translateX(4px);
+    }
+
+    html:not([data-eink='true']) .book-list-motion:active {
+      transform: translateX(2px) scale(0.995);
+      transition-duration: 100ms !important;
+    }
+
+    html:not([data-eink='true']) .book-list-cover-motion {
+      transform-origin: 50% 100%;
+      transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 300ms ease !important;
+    }
+
+    html:not([data-eink='true']) .book-list-motion:hover .book-list-cover-motion,
+    html:not([data-eink='true']) .book-list-motion:focus-visible .book-list-cover-motion {
+      transform: translateY(-2px) rotate(-1deg) scale(1.035);
+      box-shadow: 0 12px 20px -12px rgba(37, 30, 20, 0.62);
+    }
+
+  /* The normal-mode overrides above intentionally beat the global
+     reduced-motion reset. Reapply that reset for both e-ink entry paths so
+     their motion stays exactly as before. */
+  html[data-eink='true'] :is(.book-card-motion, .book-cover-motion, .book-cover-media, .book-title-motion, .book-list-motion, .book-list-cover-motion) {
+    transition-duration: 0.01ms !important;
+  }
+
+  @media (update: slow), (max-color: 1) {
+    html:not([data-eink='true']) :is(.book-card-motion, .book-cover-motion, .book-cover-media, .book-title-motion, .book-list-motion, .book-list-cover-motion) {
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

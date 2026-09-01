@@ -1,0 +1,165 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { BookOpen, Bookmark, Library, LogIn, Package, Settings } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useServerStore } from '@/lib/store/server';
+import { useExtensionStore } from '@/lib/store/extensions';
+
+let previousSidebarTabIndex: number | null = null;
+
+export function Sidebar() {
+  const pathname = usePathname();
+  const { serverTitle, user, offlineMode } = useServerStore();
+  const { extensions, loaded, loadExtensions, getSidebarExtensions } = useExtensionStore();
+  const [sidebarExts, setSidebarExts] = useState<ReturnType<typeof getSidebarExtensions>>([]);
+
+  useEffect(() => {
+    if (!loaded) loadExtensions();
+  }, [loaded, loadExtensions]);
+
+  useEffect(() => {
+    setSidebarExts(getSidebarExtensions());
+  }, [extensions, getSidebarExtensions]);
+
+  const navItems = [
+    { href: '/shelf', icon: Bookmark, label: '书架' },
+    { href: '/library', icon: Library, label: '书库' },
+    { href: '/search', icon: null, label: null, hidden: true },
+    { href: '/settings', icon: Settings, label: '设置' },
+  ];
+
+  // 拓展侧边栏项
+  const visibleNavItems = navItems.filter((item) => !item.hidden);
+  const activeNavIndex = visibleNavItems.findIndex((item) => pathname === item.href);
+  const [indicatorIndex, setIndicatorIndex] = useState(
+    previousSidebarTabIndex ?? Math.max(activeNavIndex, 0),
+  );
+
+  useEffect(() => {
+    if (activeNavIndex < 0) return;
+    previousSidebarTabIndex = activeNavIndex;
+    const frame = window.requestAnimationFrame(() => setIndicatorIndex(activeNavIndex));
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeNavIndex]);
+
+  const extNavItems = sidebarExts.map((ext) => ({
+    href: `/extensions/view?name=${ext.name}`,
+    icon: Package,
+    label: ext.sidebar?.label ?? ext.displayName,
+  }));
+
+  return (
+    <aside className="moke-sidebar fixed left-0 top-0 hidden h-full w-[220px] flex-col z-10 bg-primary lg:flex">
+      <div className="flex items-center gap-3 px-6 h-16 border-b border-white/10">
+        <div className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg bg-white/10">
+          <BookOpen className="w-5 h-5 text-primary-foreground" />
+        </div>
+        <span
+          className="min-w-0 flex-1 truncate text-lg font-semibold tracking-tight text-primary-foreground"
+          title={offlineMode ? '墨客 · 离线模式' : (serverTitle || '墨客')}
+        >
+          {offlineMode ? '墨客 · 离线' : (serverTitle || '墨客')}
+        </span>
+      </div>
+
+      <nav className="flex-1 flex flex-col px-3 pt-4 overflow-y-auto">
+        <div className="relative flex flex-col gap-1">
+          <div
+            aria-hidden="true"
+            className={cn(
+              'moke-sidebar-active-indicator pointer-events-none absolute inset-x-0 top-0 h-10 rounded-lg bg-white/10 transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.2,0,0,1)]',
+              activeNavIndex >= 0 ? 'opacity-100' : 'opacity-0',
+            )}
+            style={{ transform: `translateY(${indicatorIndex * 44}px)` }}
+          />
+        {visibleNavItems.map((item) => {
+          const isActive = pathname === item.href;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              aria-current={isActive ? 'page' : undefined}
+              className={cn(
+                'relative z-[1] flex h-10 items-center gap-3 px-3 rounded-lg text-sm font-medium transition-colors duration-150',
+                isActive
+                  ? 'text-primary-foreground'
+                  : 'text-white/55 hover:text-white hover:bg-white/5'
+              )}
+            >
+              {item.icon && <item.icon className="w-5 h-5" />}
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
+        </div>
+
+        {/* 拓展分隔 & 拓展导航项 */}
+        {extNavItems.length > 0 && (
+          <>
+            <div className="mx-3 my-1 h-px bg-white/10" />
+            <div className="px-3 py-1">
+              <span className="text-[10px] font-medium text-white/30 uppercase tracking-wider">
+                拓展
+              </span>
+            </div>
+            {extNavItems.map((item) => {
+              const isActive = pathname === item.href;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150',
+                    isActive
+                      ? 'bg-white/10 text-primary-foreground'
+                      : 'text-white/55 hover:text-white hover:bg-white/5'
+                  )}
+                >
+                  <item.icon className="w-5 h-5" />
+                  <span>{item.label}</span>
+                </Link>
+              );
+            })}
+          </>
+        )}
+      </nav>
+
+      <div className="px-4 py-4 border-t border-white/10">
+        {offlineMode ? (
+          <Link href="/welcome" className="flex items-center justify-center rounded-lg bg-white/10 px-3 py-2.5 text-sm text-primary-foreground hover:bg-white/15">
+            连接服务器
+          </Link>
+        ) : user ? (
+          <Link
+            href="/user"
+            className={cn(
+              'flex items-center gap-3 px-2 py-2 rounded-lg transition-colors',
+              pathname === '/user'
+                ? 'bg-white/10 text-primary-foreground'
+                : 'text-white/55 hover:text-white hover:bg-white/5'
+            )}
+          >
+            <div className="w-8 h-8 rounded-full bg-white/15 flex items-center justify-center text-xs font-semibold text-primary-foreground shrink-0">
+              {user.name?.[0] || 'U'}
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm truncate">{user.name}</p>
+              <p className="text-[11px] text-white/45 truncate">个人信息</p>
+            </div>
+          </Link>
+        ) : (
+          <Link
+            href="/login"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-white/10 px-3 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-white/15"
+          >
+            <LogIn className="h-4 w-4 shrink-0" />
+            <span>登录</span>
+          </Link>
+        )}
+      </div>
+    </aside>
+  );
+}

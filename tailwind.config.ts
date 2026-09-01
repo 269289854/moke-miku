@@ -1,0 +1,95 @@
+import type { Config } from 'tailwindcss';
+
+const config: Config = {
+  darkMode: 'class',
+  content: [
+    './src/**/*.{js,ts,jsx,tsx,mdx}',
+  ],
+  theme: {
+    extend: {
+      colors: {
+        background: 'hsl(var(--background) / <alpha-value>)',
+        foreground: 'hsl(var(--foreground) / <alpha-value>)',
+        card: 'hsl(var(--card) / <alpha-value>)',
+        'card-foreground': 'hsl(var(--card-foreground) / <alpha-value>)',
+        primary: {
+          DEFAULT: 'hsl(var(--primary) / <alpha-value>)',
+          foreground: 'hsl(var(--primary-foreground) / <alpha-value>)',
+        },
+        muted: {
+          DEFAULT: 'hsl(var(--muted) / <alpha-value>)',
+          foreground: 'hsl(var(--muted-foreground) / <alpha-value>)',
+        },
+        accent: {
+          DEFAULT: 'hsl(var(--accent) / <alpha-value>)',
+          foreground: 'hsl(var(--accent-foreground) / <alpha-value>)',
+        },
+        destructive: {
+          DEFAULT: 'hsl(var(--destructive) / <alpha-value>)',
+          foreground: 'hsl(var(--destructive-foreground) / <alpha-value>)',
+        },
+        success: {
+          DEFAULT: 'hsl(var(--success) / <alpha-value>)',
+          foreground: 'hsl(var(--success-foreground) / <alpha-value>)',
+        },
+        border: 'hsl(var(--border) / <alpha-value>)',
+        input: 'hsl(var(--input) / <alpha-value>)',
+        ring: 'hsl(var(--ring) / <alpha-value>)',
+      },
+      fontFamily: {
+        sans: [
+          "'Inter'",
+          "'PingFang SC'",
+          "'Noto Sans SC'",
+          'system-ui',
+          '-apple-system',
+          'sans-serif',
+        ],
+        serif: [
+          "'Georgia'",
+          "'Noto Serif SC'",
+          "'Songti SC'",
+          'serif',
+        ],
+      },
+      fontSize: {
+        xs: ['11px', { lineHeight: '1.5' }],
+        sm: ['13px', { lineHeight: '1.5' }],
+        base: ['15px', { lineHeight: '1.55' }],
+        lg: ['18px', { lineHeight: '1.5' }],
+        xl: ['20px', { lineHeight: '1.4' }],
+        '2xl': ['24px', { lineHeight: '1.3' }],
+      },
+      borderRadius: {
+        sm: '4px',
+        md: '10px',
+        lg: '14px',
+        xl: '18px',
+        '2xl': '24px',
+      },
+      boxShadow: {
+        card: '0 1px 3px rgba(0,0,0,0.04)',
+        dropdown: '0 4px 12px rgba(0,0,0,0.08)',
+        welcome: '0 2px 12px rgba(0,0,0,0.05)',
+      },
+      width: {
+        sidebar: '220px',
+      },
+    },
+  },
+  plugins: [
+    require('@tailwindcss/typography'),
+    // ponytail: mirror readest's eink variants so Moke + reader share one
+    // convention (html[data-eink='true']).
+    require('tailwindcss/plugin')(({
+      addVariant,
+    }: {
+      addVariant: (name: string, selector: string) => void;
+    }) => {
+      addVariant('eink', 'html[data-eink="true"] &');
+      addVariant('not-eink', 'html:not([data-eink="true"]) &');
+    }),
+  ],
+};
+
+export default config;

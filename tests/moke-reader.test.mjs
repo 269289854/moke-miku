@@ -1,0 +1,366 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  buildEmbeddedReaderHomeUrl,
+  buildEmbeddedReaderUrl,
+  buildReaderHomeWindowLabel,
+  getNativeTopSafeAreaInset,
+  isSingleWebviewRuntime,
+  isSafeAppNavigationPath,
+  openEmbeddedReaderHome,
+  requiresMokeNavigate,
+  resolveRuntimeCategory,
+  runtimeCategoryFromPlatform,
+  showMokeSystemStatusBar,
+  shouldApplyTopSafeArea,
+  shouldIncludeServerUrl,
+} from '../src/lib/moke-reader.ts';
+
+test('OHOS uses the single-WebView reader flow', () => {
+  assert.equal(isSingleWebviewRuntime('ohos'), true);
+  assert.equal(isSingleWebviewRuntime('android'), true);
+  assert.equal(isSingleWebviewRuntime('ios'), true);
+  assert.equal(isSingleWebviewRuntime('linux'), false);
+  assert.equal(isSingleWebviewRuntime('windows'), false);
+});
+
+test('Android and OpenHarmony use native full-document navigation', () => {
+  assert.equal(requiresMokeNavigate('ohos'), true);
+  assert.equal(requiresMokeNavigate('android'), true);
+  assert.equal(requiresMokeNavigate('ios'), false);
+  assert.equal(requiresMokeNavigate('linux'), false);
+  assert.equal(requiresMokeNavigate('windows'), false);
+});
+
+test('full-document navigation accepts only same-origin absolute paths', () => {
+  assert.equal(isSafeAppNavigationPath('/readest/reader?book=1'), true);
+  assert.equal(isSafeAppNavigationPath('/library'), true);
+  assert.equal(isSafeAppNavigationPath('//evil.example/reader'), false);
+  assert.equal(isSafeAppNavigationPath('https://evil.example/reader'), false);
+  assert.equal(isSafeAppNavigationPath('readest/reader'), false);
+});
+
+test('runtimeCategoryFromPlatform classifies each runtime', () => {
+  assert.equal(runtimeCategoryFromPlatform('ohos'), 'mobile');
+  assert.equal(runtimeCategoryFromPlatform('android'), 'mobile');
+  assert.equal(runtimeCategoryFromPlatform('ios'), 'mobile');
+  assert.equal(runtimeCategoryFromPlatform('linux'), 'desktop');
+  assert.equal(runtimeCategoryFromPlatform('windows'), 'desktop');
+  assert.equal(runtimeCategoryFromPlatform('macos'), 'desktop');
+});
+
+test('top safe area applies to edge-to-edge mobile runtimes except Android multi-window', () => {
+  assert.equal(shouldApplyTopSafeArea('android'), true);
+  assert.equal(shouldApplyTopSafeArea('android', true), false);
+  assert.equal(shouldApplyTopSafeArea('ios'), true);
+  assert.equal(shouldApplyTopSafeArea('ios', true), true);
+  assert.equal(shouldApplyTopSafeArea('ohos'), false);
+  assert.equal(shouldApplyTopSafeArea('linux'), false);
+  assert.equal(shouldApplyTopSafeArea('windows'), false);
+  assert.equal(shouldApplyTopSafeArea('web'), false);
+});
+
+test('native top safe area uses status-bar pixels on Android and safe insets on iOS', async () => {
+  const commands = [];
+  const invoke = async (command) => {
+    commands.push(command);
+    if (command === 'plugin:native-bridge|get_status_bar_height') {
+      return { height: 72 };
+    }
+    return { top: 47 };
+  };
+
+  assert.equal(await getNativeTopSafeAreaInset('android', 3, invoke), 24);
+  assert.equal(await getNativeTopSafeAreaInset('android', 3, invoke, true), 0);
+  assert.equal(await getNativeTopSafeAreaInset('ios', 2, invoke), 47);
+  assert.equal(await getNativeTopSafeAreaInset('ohos', 3, invoke), 0);
+  assert.deepEqual(commands, [
+    'plugin:native-bridge|get_status_bar_height',
+    'plugin:native-bridge|get_safe_area_insets',
+  ]);
+});
+
+test('native top safe area rejects errors and normalizes invalid values', async () => {
+  await assert.rejects(
+    getNativeTopSafeAreaInset('android', 3, async () => ({ height: -1, error: 'not ready' })),
+    /not ready/,
+  );
+  assert.equal(
+    await getNativeTopSafeAreaInset('android', 0, async () => ({ height: -1 })),
+    0,
+  );
+  assert.equal(
+    await getNativeTopSafeAreaInset('ios', 2, async () => ({ top: Number.NaN })),
+    0,
+  );
+});
+
+test('Moke restores the mobile status bar without changing Android navigation UI', async () => {
+  const androidCalls = [];
+  const androidBridge = {
+    showStatusBar: (darkMode) => androidCalls.push(darkMode),
+  };
+  const invokeCalls = [];
+  const invoke = async (command, args) => {
+    invokeCalls.push([command, args]);
+    return { success: true };
+  };
+
+  assert.equal(await showMokeSystemStatusBar('android', true, androidBridge, invoke), true);
+  assert.deepEqual(androidCalls, [true]);
+  assert.deepEqual(invokeCalls, []);
+
+  assert.equal(await showMokeSystemStatusBar('ios', false, undefined, invoke), true);
+  assert.deepEqual(invokeCalls, [[
+    'plugin:native-bridge|set_system_ui_visibility',
+    { payload: { visible: true, darkMode: false } },
+  ]]);
+
+  assert.equal(await showMokeSystemStatusBar('ohos', false, androidBridge, invoke), false);
+  assert.equal(await showMokeSystemStatusBar('windows', false, androidBridge, invoke), false);
+  assert.deepEqual(androidCalls, [true]);
+  assert.equal(invokeCalls.length, 1);
+});
+
+test('Moke surfaces iOS status-bar restoration failures', async () => {
+  await assert.rejects(
+    showMokeSystemStatusBar('ios', false, undefined, async () => ({
+      success: false,
+      error: 'status bar unavailable',
+    })),
+    /status bar unavailable/,
+  );
+});
+
+test('resolveRuntimeCategory falls back to mobile when the probe is unavailable', async () => {
+  const prev = process.env.NEXT_PUBLIC_APP_PLATFORM;
+  process.env.NEXT_PUBLIC_APP_PLATFORM = 'tauri';
+  try {
+    // In a plain Node environment there is no Tauri IPC bridge, so the
+    // `moke_runtime_platform` invoke cannot succeed. The resolver must NOT
+    // fall back to desktop (which would drive an unregistered updater on
+    // mobile builds) — it must resolve to mobile instead.
+    assert.equal(await resolveRuntimeCategory(), 'mobile');
+  } finally {
+    if (prev === undefined) {
+      delete process.env.NEXT_PUBLIC_APP_PLATFORM;
+    } else {
+      process.env.NEXT_PUBLIC_APP_PLATFORM = prev;
+    }
+  }
+});
+
+test('resolveRuntimeCategory resolves desktop outside the tauri platform', async () => {
+  const prev = process.env.NEXT_PUBLIC_APP_PLATFORM;
+  if (prev !== undefined) delete process.env.NEXT_PUBLIC_APP_PLATFORM;
+  try {
+    assert.equal(await resolveRuntimeCategory(), 'desktop');
+  } finally {
+    if (prev !== undefined) process.env.NEXT_PUBLIC_APP_PLATFORM = prev;
+  }
+});
+
+test('reader-home window label never matches the extension reader-* enumeration', () => {
+  // H20-L4: 书库首页窗口不能被扩展当成阅读器窗口寻址。
+  const label = buildReaderHomeWindowLabel(1234);
+  assert.equal(label, 'moke-home-1234');
+  assert.ok(!label.startsWith('reader-'));
+  assert.ok(label.startsWith('moke-home-'));
+});
+
+test('shouldIncludeServerUrl maps runtime → serverUrl inclusion decision', () => {
+  // Web build: reader replaces the host app, must save progress itself.
+  assert.equal(shouldIncludeServerUrl(false, 'web'), true);
+  assert.equal(shouldIncludeServerUrl(false, 'desktop'), true);
+
+  // Single-WebView runtimes: reader replaces the host app, must save itself.
+  assert.equal(shouldIncludeServerUrl(true, 'ohos'), true);
+  assert.equal(shouldIncludeServerUrl(true, 'android'), true);
+  assert.equal(shouldIncludeServerUrl(true, 'ios'), true);
+
+  // Desktop: main-window ReaderProgressProvider is the single saver.
+  assert.equal(shouldIncludeServerUrl(true, 'windows'), false);
+  assert.equal(shouldIncludeServerUrl(true, 'linux'), false);
+  assert.equal(shouldIncludeServerUrl(true, 'macos'), false);
+});
+
+test('buildEmbeddedReaderUrl preserves the mobile reader launch context', () => {
+  const url = new URL(
+    buildEmbeddedReaderUrl({
+      filePath: 'C:\\Users\\reader\\我的书.pdf',
+      eink: true,
+      debugPanel: true,
+      mokeBookId: '14',
+      serverUrl: 'http://192.168.1.5:8080',
+      restoreProgress: {
+        schema: 'moke.readest.progress.v1',
+        reader: 'readest',
+        moke_book_id: '14',
+        location: 'page=142',
+        moke_navigation_id: 'annotation-locate-14',
+        moke_navigation_kind: 'annotation-locate',
+        updated_at: '2026-07-24T00:00:00.000Z',
+      },
+    }),
+    'https://moke.invalid',
+  );
+
+  assert.equal(url.pathname, '/readest/reader');
+  assert.equal(url.searchParams.get('file'), 'C:\\Users\\reader\\我的书.pdf');
+  assert.equal(url.searchParams.get('moke'), '1');
+  assert.equal(url.searchParams.get('mokeEink'), '1');
+  assert.equal(url.searchParams.get('mokeDebug'), '1');
+  assert.equal(url.searchParams.get('mokeBookId'), '14');
+  assert.equal(url.searchParams.get('mokeReturnTo'), '/library');
+  assert.equal(url.searchParams.get('mokeServerUrl'), 'http://192.168.1.5:8080');
+  assert.deepEqual(JSON.parse(url.searchParams.get('mokeRestoreProgress')), {
+    schema: 'moke.readest.progress.v1',
+    reader: 'readest',
+    moke_book_id: '14',
+    location: 'page=142',
+    moke_navigation_id: 'annotation-locate-14',
+    moke_navigation_kind: 'annotation-locate',
+    updated_at: '2026-07-24T00:00:00.000Z',
+  });
+
+  // Empty serverUrl must not produce a bare `mokeServerUrl=` param.
+  const empty = new URL(
+    buildEmbeddedReaderUrl({
+      filePath: 'C:\\book.pdf',
+      eink: false,
+      mokeBookId: '15',
+      restoreProgress: null,
+      serverUrl: '',
+    }),
+    'https://moke.invalid',
+  );
+  assert.equal(empty.searchParams.get('moke'), '1');
+  assert.equal(empty.searchParams.get('mokeDebug'), '0');
+  assert.equal(empty.searchParams.get('mokeServerUrl'), null);
+});
+
+test('buildEmbeddedReaderHomeUrl carries mokeServerUrl only when non-empty', () => {
+  // Reader must save progress itself: a serverUrl is carried verbatim.
+  const mobile = new URL(
+    buildEmbeddedReaderHomeUrl({
+      eink: true,
+      debugPanel: true,
+      serverUrl: 'http://192.168.1.5:8080',
+    }),
+    'https://moke.invalid',
+  );
+  assert.equal(mobile.pathname, '/readest/');
+  assert.equal(mobile.searchParams.get('moke'), '1');
+  assert.equal(mobile.searchParams.get('mokeEink'), '1');
+  assert.equal(mobile.searchParams.get('mokeDebug'), '1');
+  assert.equal(mobile.searchParams.get('mokeServerUrl'), 'http://192.168.1.5:8080');
+
+  // Desktop: callers omit serverUrl, so no mokeServerUrl is emitted and the
+  // main window's ReaderProgressProvider is the single saver (no duplicate
+  // write via mokeBridge's direct POST).
+  const desktop = new URL(
+    buildEmbeddedReaderHomeUrl({
+      eink: false,
+    }),
+    'https://moke.invalid',
+  );
+  assert.equal(desktop.pathname, '/readest/');
+  assert.equal(desktop.searchParams.get('moke'), '1');
+  assert.equal(desktop.searchParams.get('mokeEink'), '0');
+  assert.equal(desktop.searchParams.get('mokeDebug'), '0');
+  assert.equal(desktop.searchParams.get('mokeServerUrl'), null);
+
+  // Empty serverUrl must not produce a bare `mokeServerUrl=` param either.
+  const empty = new URL(
+    buildEmbeddedReaderHomeUrl({
+      eink: false,
+      serverUrl: '',
+    }),
+    'https://moke.invalid',
+  );
+  assert.equal(empty.pathname, '/readest/');
+  assert.equal(empty.searchParams.get('moke'), '1');
+  assert.equal(empty.searchParams.get('mokeEink'), '0');
+  assert.equal(empty.searchParams.get('mokeServerUrl'), null);
+});
+
+test('desktop reader-home keeps exactly one progress saver across window outcomes', async () => {
+  const previousPlatform = process.env.NEXT_PUBLIC_APP_PLATFORM;
+  const originalWarn = console.warn;
+  const warnings = [];
+  process.env.NEXT_PUBLIC_APP_PLATFORM = 'tauri';
+  console.warn = (...args) => warnings.push(args);
+
+  const run = async (outcome) => {
+    const windowUrls = [];
+    const navigatedUrls = [];
+    const windowFactory = (_label, options) => {
+      if (outcome === 'sync-error') {
+        throw new Error('window constructor failed');
+      }
+
+      windowUrls.push(options.url);
+      const listeners = new Map();
+      queueMicrotask(() => {
+        if (outcome === 'created') {
+          listeners.get('tauri://created')?.({});
+        } else {
+          listeners.get('tauri://error')?.({ payload: 'window event failed' });
+        }
+      });
+      return {
+        once: (event, handler) => listeners.set(event, handler),
+      };
+    };
+
+    await openEmbeddedReaderHome({
+      eink: false,
+      debugPanel: true,
+      serverUrl: 'http://192.168.1.5:8080',
+      navigate: (href) => navigatedUrls.push(href),
+      platformOverride: 'windows',
+      windowFactory,
+    });
+
+    return { windowUrls, navigatedUrls };
+  };
+
+  try {
+    const success = await run('created');
+    assert.equal(success.windowUrls.length, 1);
+    assert.equal(success.navigatedUrls.length, 0);
+    assert.equal(
+      new URL(success.windowUrls[0], 'https://moke.invalid').searchParams.get('mokeServerUrl'),
+      null,
+    );
+
+    for (const outcome of ['sync-error', 'async-error']) {
+      const fallback = await run(outcome);
+      assert.equal(fallback.navigatedUrls.length, 1, outcome);
+      const fallbackUrl = new URL(fallback.navigatedUrls[0], 'https://moke.invalid');
+      assert.equal(fallbackUrl.searchParams.get('mokeServerUrl'), 'http://192.168.1.5:8080');
+      assert.equal(fallbackUrl.searchParams.get('mokeDebug'), '1');
+      if (outcome === 'async-error') {
+        assert.equal(fallback.windowUrls.length, 1);
+        assert.equal(
+          new URL(fallback.windowUrls[0], 'https://moke.invalid').searchParams.get('mokeServerUrl'),
+          null,
+        );
+      }
+    }
+
+    assert.equal(warnings.length, 2);
+    for (const [message, error] of warnings) {
+      assert.equal(message, 'Falling back to current-window embedded reader navigation:');
+      assert.ok(error instanceof Error);
+    }
+  } finally {
+    console.warn = originalWarn;
+    if (previousPlatform === undefined) {
+      delete process.env.NEXT_PUBLIC_APP_PLATFORM;
+    } else {
+      process.env.NEXT_PUBLIC_APP_PLATFORM = previousPlatform;
+    }
+  }
+});

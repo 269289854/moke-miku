@@ -1,0 +1,108 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Moke",
+  "version": "../package.json",
+  "identifier": "org.houheya.moke",
+  "build": {
+    "frontendDist": "../out",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "node scripts/dev.mjs",
+    "beforeBuildCommand": "pnpm build && pnpm build:reader && pnpm copy:reader"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "墨客",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "capabilities": ["default", "reader", "reader-mobile"],
+      "csp": {
+        "default-src": "'self' tauri: http://tauri.localhost asset: http://asset.localhost",
+        "script-src": "'self' 'unsafe-eval' asset: http://asset.localhost https://static.geetest.com https://us-assets.i.posthog.com",
+        "style-src": "'self' 'unsafe-inline' blob: asset: http://asset.localhost https://cdn.jsdelivr.net https://fonts.googleapis.com https://cdnjs.cloudflare.com https://storage.readest.com",
+        "img-src": "'self' data: blob: asset: http://asset.localhost rangefile: http://rangefile.localhost http: https:",
+        "font-src": "'self' data: blob: asset: http://asset.localhost tauri: http: https:",
+        "connect-src": "'self' ipc: http://ipc.localhost asset: http://asset.localhost rangefile: http://rangefile.localhost data: blob: http: https: ws: wss:",
+        "media-src": "'self' data: blob: asset: http://asset.localhost rangefile: http://rangefile.localhost http: https:",
+        "worker-src": "'self' blob:",
+        "frame-src": "'self' data: blob: asset: http://asset.localhost http: https:",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'self' http: https:",
+        "frame-ancestors": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'self' tauri: http://tauri.localhost asset: http://asset.localhost",
+        "script-src": "'self' 'unsafe-inline' 'unsafe-eval' asset: http://asset.localhost http://localhost:3000 http://127.0.0.1:3000 http://localhost:3001 http://127.0.0.1:3001 https://static.geetest.com https://us-assets.i.posthog.com",
+        "style-src": "'self' 'unsafe-inline' blob: asset: http://asset.localhost http://localhost:3000 http://127.0.0.1:3000 http://localhost:3001 http://127.0.0.1:3001 https://cdn.jsdelivr.net https://fonts.googleapis.com https://cdnjs.cloudflare.com https://storage.readest.com",
+        "img-src": "'self' data: blob: asset: http://asset.localhost rangefile: http://rangefile.localhost http: https:",
+        "font-src": "'self' data: blob: asset: http://asset.localhost tauri: http: https:",
+        "connect-src": "'self' ipc: http://ipc.localhost asset: http://asset.localhost rangefile: http://rangefile.localhost data: blob: http: https: ws: wss:",
+        "media-src": "'self' data: blob: asset: http://asset.localhost rangefile: http://rangefile.localhost http: https:",
+        "worker-src": "'self' blob:",
+        "frame-src": "'self' data: blob: asset: http://asset.localhost http: https:",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'self' http: https:",
+        "frame-ancestors": "'none'"
+      },
+      "dangerousDisableAssetCspModification": false,
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": [
+            "$RESOURCE/**",
+            "$APPDATA/**/*",
+            "$APPCACHE/**/*",
+            "$TEMP/**/*"
+          ],
+          "deny": []
+        }
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "wix": {
+        "upgradeCode": "d1dfe239-c6ec-5195-980b-2d6cd723458a"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "iOS": {
+      "developmentTeam": "6X9BLAS47C"
+    }
+  },
+  "plugins": {
+    "fs": {
+      "requireLiteralLeadingDot": false
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwQkJFQTlFQzIyQzQ5OEMKUldTTVNTekNudXE3RU1MVERSWHNFZ3U2Q2RWa2psN1hIbTF2Z0Q0aWRWNmFhSVM5b01oNkg4dGIK",
+      "endpoints": [
+        "https://github.com/talebook/moke/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

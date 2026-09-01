@@ -1,0 +1,121 @@
+[package]
+name = "moke"
+version = "0.1.0"
+description = "Moke - Talebook Client"
+authors = ["Moke"]
+license = ""
+repository = ""
+edition = "2021"
+
+[lib]
+name = "moke_lib"
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[features]
+reader-e2e = ["tauri-plugin-webdriver"]
+
+[build-dependencies]
+tauri-build = { path = "../vendor/tauri/crates/tauri-build", features = [] }
+
+[dev-dependencies]
+# Same glob crate version tauri resolves (0.3.4, already in Cargo.lock via tauri).
+# Used by the fs/asset-protocol scope regression tests that lock the
+# app-directory boundaries (HOU-30, TB-85 F4 / TB-89).
+glob = "0.3"
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+sysinfo = "0.34.2"
+tauri = { path = "../vendor/tauri/crates/tauri", default-features = false, features = [
+  "wry",
+  "protocol-asset",
+  "compression",
+  "dynamic-acl",
+] }
+tauri-plugin-fs = "=2.5.1"
+tauri-plugin-http = { version = "=2.5.9", features = ["cookies", "dangerous-settings", "unsafe-headers"] }
+tauri-plugin-os = "=2.3.2"
+tauri-plugin-shell = "=2.3.5"
+tauri-plugin-opener = "=2.5.4"
+tauri-plugin-webdriver = { version = "=0.2.1", optional = true }
+
+# Reader plugins — compiled unconditionally so the reader works on OHOS
+# (matching how readest standalone builds).
+readestlib = { package = "Readest", path = "../readest/apps/readest-app/src-tauri", default-features = false }
+tauri-plugin-websocket = "2"
+tauri-plugin-process = "2"
+tauri-plugin-oauth = "2"
+tauri-plugin-device-info = "1.0.1"
+tauri-plugin-log = "2"
+tauri-plugin-native-bridge = { path = "../readest/apps/readest-app/src-tauri/plugins/tauri-plugin-native-bridge" }
+tauri-plugin-native-tts = { path = "../readest/apps/readest-app/src-tauri/plugins/tauri-plugin-native-tts" }
+tauri-plugin-deep-link = "2"
+tauri-plugin-turso = { path = "../readest/apps/readest-app/src-tauri/plugins/tauri-plugin-turso" }
+uuid = { version = "1", features = ["v4"] }
+log = "0.4"
+tiny_http = "0.12"
+tungstenite = "0.24"
+
+# Plugins that depend on native Linux libraries (gtk/x11)
+# and cannot cross-compile to OHOS.
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+tauri = { path = "../vendor/tauri/crates/tauri", default-features = false, features = [
+  "common-controls-v6",
+  "x11",
+  "dbus",
+] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-updater = "2"
+
+[target.'cfg(target_env = "ohos")'.dependencies]
+napi-ohos = "1.1"
+napi-derive-ohos = "1.1"
+# Vendored at vendor/openharmony-ability (pinned to 6c52bb4), the last
+# pre-pluginize release that still exposes the `webview` feature the wry
+# feat/open-harmony branch requires. wry depends on this crate via git without
+# a rev; the [patch] below points that git source at this vendored path so both
+# resolve to the same pinned commit.
+openharmony-ability = { path = "../vendor/openharmony-ability/crates/ability" }
+openharmony-ability-derive = { path = "../vendor/openharmony-ability/crates/derive" }
+
+[patch.crates-io]
+# turso_ext's build.rs checks `cfg!(target_os = "windows")` which evaluates
+# on the build *host*: cross-compiling from Windows for OpenHarmony
+# (target_os = "linux") wrongly links advapi32 (a Windows-only lib). Vendored
+# at readest's patches/turso_ext with the target read via CARGO_CFG_TARGET_OS.
+turso_ext = { path = "../readest/patches/turso_ext" }
+# tauri-plugin-deep-link reads `Env::appimage` on Linux, a field the Moke
+# Tauri fork only exposes off-OpenHarmony. Vendored at readest's
+# patches/tauri-plugin-deep-link with that read cfg-gated for OHOS.
+tauri-plugin-deep-link = { path = "../readest/patches/tauri-plugin-deep-link" }
+tauri = { path = "../vendor/tauri/crates/tauri" }
+tauri-build = { path = "../vendor/tauri/crates/tauri-build" }
+tauri-codegen = { path = "../vendor/tauri/crates/tauri-codegen" }
+tauri-macros = { path = "../vendor/tauri/crates/tauri-macros" }
+tauri-plugin = { path = "../vendor/tauri/crates/tauri-plugin" }
+tauri-runtime = { path = "../vendor/tauri/crates/tauri-runtime" }
+tauri-runtime-wry = { path = "../vendor/tauri/crates/tauri-runtime-wry" }
+tauri-utils = { path = "../vendor/tauri/crates/tauri-utils" }
+
+# wry is vendored at vendor/wry (fork of tauri-apps/wry, feat/open-harmony
+# branch) so OHOS fixes (linux-body cross-compile, ArkWeb eval) can be made
+# locally and upstreamed as a separate PR to tauri-apps/wry.
+wry = { path = "../vendor/wry" }
+tao = { git = "https://github.com/tauri-apps/tao", branch = "feat/open-harmony" }
+
+# wry (feat/open-harmony) depends on openharmony-ability via git without a rev
+# and requires its `webview` feature, which the upstream default branch removed
+# after the 6c52bb4 pluginize refactor. Point that git source at the vendored
+# copy (pinned to 6c52bb4) so the `webview` feature resolves.
+[patch."https://github.com/harmony-contrib/openharmony-ability.git"]
+openharmony-ability = { path = "../vendor/openharmony-ability/crates/ability" }
+openharmony-ability-derive = { path = "../vendor/openharmony-ability/crates/derive" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
+panic = "abort"
