@@ -10,6 +10,7 @@ import {
   drainResponseBodyQuietly,
   getErrorMessage,
   isAbsoluteHttpUrl,
+  isTauriIpcAvailable,
   readApiJson,
   readJsonResponse,
   resolveAppPlatform,
@@ -20,6 +21,13 @@ test('API 地址只接受绝对 HTTP(S) 地址', () => {
   assert.equal(isAbsoluteHttpUrl('https://books.example.com/api/books'), true);
   assert.equal(isAbsoluteHttpUrl('/api/books'), false);
   assert.equal(isAbsoluteHttpUrl('file:///tmp/book.epub'), false);
+});
+
+test('Tauri IPC 可用性只接受带 invoke 函数的内部对象', () => {
+  assert.equal(isTauriIpcAvailable(undefined), false);
+  assert.equal(isTauriIpcAvailable({}), false);
+  assert.equal(isTauriIpcAvailable({ invoke: true }), false);
+  assert.equal(isTauriIpcAvailable({ invoke() {} }), true);
 });
 
 test('API 成功响应和允许的兼容错误码可以正常读取', async () => {

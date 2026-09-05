@@ -6,7 +6,7 @@ import { useServerStore } from '@/lib/store/server';
 import { useRouter } from 'next/navigation';
 import { BookOpen, History, Search } from 'lucide-react';
 import { DesktopLayout } from '@/components/layout/DesktopLayout';
-import { getErrorMessage, readApiJson, request } from '@/lib/api';
+import { getErrorMessage, invalidateBookReadCaches, readApiJson, request, requestCachedJson } from '@/lib/api';
 import { cn, resolveServerAssetUrl } from '@/lib/utils';
 import { AuthImage } from '@/components/ui/AuthImage';
 import { BookTable, type BookRow } from '@/components/book/BookTable';
@@ -209,7 +209,11 @@ export default function ShelfPage() {
         })));
         return;
       }
-      const res = await request(`${serverUrl}/api/shelf`, { credentials: 'include' });
+      const res = await requestCachedJson(
+        `${serverUrl}/api/shelf`,
+        { credentials: 'include' },
+        5 * 60 * 1000,
+      );
       const data = await readApiJson<{ err?: string; msg?: string; books?: BookItem[] }>(res, '书架列表解析失败。', ['ok', 'user.need_login']);
 
       if (data.err === 'user.need_login') {
@@ -292,6 +296,7 @@ export default function ShelfPage() {
       });
       const data = await res.json();
       if (data.err === 'ok') {
+        await invalidateBookReadCaches(serverUrl, id);
         toast(`已移出《${book.title}》`);
         await loadBooks();
       } else {
@@ -377,6 +382,11 @@ export default function ShelfPage() {
         if (r.status === 'fulfilled' && r.value?.err === 'ok') ok++;
         else fail++;
       }
+      const succeededIds = ids.filter((_, index) => {
+        const result = results[index];
+        return result.status === 'fulfilled' && result.value?.err === 'ok';
+      });
+      await Promise.all(succeededIds.map((id) => invalidateBookReadCaches(serverUrl, id)));
       // Refresh shelf list to reflect the removals
       await loadBooks();
       exitBatchMode();

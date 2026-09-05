@@ -17,6 +17,36 @@
       ]
     },
     {
+      "identifier": "fs:read-files",
+      "allow": [
+        {
+          "path": "$APPCACHE/moke-http-cache/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:read-dirs",
+      "allow": [
+        {
+          "path": "$APPCACHE/moke-http-cache"
+        },
+        {
+          "path": "$APPCACHE/moke-http-cache/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:write-all",
+      "allow": [
+        {
+          "path": "$APPCACHE/moke-http-cache"
+        },
+        {
+          "path": "$APPCACHE/moke-http-cache/**"
+        }
+      ]
+    },
+    {
       "identifier": "fs:allow-mkdir",
       "allow": [
         {
@@ -24,6 +54,12 @@
         },
         {
           "path": "$APPDATA/books/**"
+        },
+        {
+          "path": "$APPCACHE/moke-http-cache"
+        },
+        {
+          "path": "$APPCACHE/moke-http-cache/**"
         }
       ]
     },

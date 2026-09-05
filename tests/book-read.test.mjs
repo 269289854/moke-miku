@@ -16,10 +16,10 @@ function deferred() {
 }
 
 function fakeResponse({
-  body = '',
-  contentType = 'text/html; charset=utf-8',
+  body = JSON.stringify({ err: 'ok' }),
+  contentType = 'application/json; charset=utf-8',
   status = 200,
-  url = 'https://books.example/read/a',
+  url = 'https://books.example/api/book/a/readstate',
 } = {}) {
   const encoded = new TextEncoder().encode(body);
   return {
@@ -120,7 +120,7 @@ test('移动端导航前记录失败不会阻止阅读器准备完成', async ()
   assert.match(errors[0].message, /record failed/);
 });
 
-test('阅读器成功打开后通过 Talebook 阅读路由持久化一次记录', async () => {
+test('阅读器成功打开后通过 Talebook 阅读状态 API 持久化一次记录', async () => {
   const events = [];
   const requests = [];
 
@@ -129,15 +129,28 @@ test('阅读器成功打开后通过 Talebook 阅读路由持久化一次记录'
     record: () => recordBookRead(async (url, init) => {
       events.push('recorded');
       requests.push({ url, init });
-      return fakeResponse({ url: 'https://books.example/read/a%2Fb' });
+      return fakeResponse({ url: 'https://books.example/api/book/a%2Fb/readstate' });
     }, 'https://books.example', 'a/b'),
   });
 
   assert.deepEqual(events, ['opened', 'recorded']);
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'https://books.example/read/a%2Fb');
+  assert.equal(requests[0].url, 'https://books.example/api/book/a%2Fb/readstate');
+  assert.equal(requests[0].init.method, 'POST');
+  assert.equal(requests[0].init.headers['Content-Type'], 'application/json');
   assert.equal(requests[0].init.credentials, 'include');
   assert.ok(requests[0].init.signal instanceof AbortSignal);
+  assert.deepEqual(JSON.parse(requests[0].init.body), { read_state: 1, online_read: 1 });
+});
+
+test('本地阅读只更新在读状态，不覆盖在线阅读标记', async () => {
+  let request;
+  await recordBookRead(async (url, init) => {
+    request = { url, init };
+    return fakeResponse();
+  }, 'https://books.example', 'a', 10_000, false);
+
+  assert.deepEqual(JSON.parse(request.init.body), { read_state: 1 });
 });
 
 test('阅读器打开失败时不增加阅读记录', async () => {
@@ -194,14 +207,14 @@ test('会话失效被重定向到站点根路径时不误报记录成功', async
 
 test('重定向到其他来源的同名阅读路径时不误报记录成功', async () => {
   await assert.rejects(
-    recordBookRead(async () => fakeResponse({ url: 'https://login.example/read/a' }), 'https://books.example', 'a'),
+    recordBookRead(async () => fakeResponse({ url: 'https://login.example/api/book/a/readstate' }), 'https://books.example', 'a'),
     /book\.read_record\.redirect/,
   );
 });
 
 test('仍落在同源阅读路由上的重定向视为记录成功', async () => {
   await recordBookRead(
-    async () => fakeResponse({ url: 'https://books.example/read/a/' }),
+    async () => fakeResponse({ url: 'https://books.example/api/book/a/readstate/' }),
     'https://books.example',
     'a',
   );
@@ -220,7 +233,7 @@ test('响应未暴露最终 URL 时不会绕过重定向验证', async () => {
 
 test('同主机默认端口允许从 HTTP 安全升级到 HTTPS', async () => {
   await recordBookRead(
-    async () => fakeResponse({ url: 'https://books.example/read/a' }),
+    async () => fakeResponse({ url: 'https://books.example/api/book/a/readstate' }),
     'http://books.example',
     'a',
   );
@@ -229,7 +242,7 @@ test('同主机默认端口允许从 HTTP 安全升级到 HTTPS', async () => {
 test('阅读记录重定向拒绝协议降级和非默认端口变化', async () => {
   await assert.rejects(
     recordBookRead(
-      async () => fakeResponse({ url: 'http://books.example/read/a' }),
+      async () => fakeResponse({ url: 'http://books.example/api/book/a/readstate' }),
       'https://books.example',
       'a',
     ),
@@ -237,7 +250,7 @@ test('阅读记录重定向拒绝协议降级和非默认端口变化', async ()
   );
   await assert.rejects(
     recordBookRead(
-      async () => fakeResponse({ url: 'https://books.example:8443/read/a' }),
+      async () => fakeResponse({ url: 'https://books.example:8443/api/book/a/readstate' }),
       'https://books.example',
       'a',
     ),
@@ -247,7 +260,7 @@ test('阅读记录重定向拒绝协议降级和非默认端口变化', async ()
 
 test('重定向 URL 解码后的书籍路径仍可与编码请求匹配', async () => {
   await recordBookRead(
-    async () => fakeResponse({ url: 'https://books.example/read/a/b' }),
+    async () => fakeResponse({ url: 'https://books.example/api/book/a/b/readstate' }),
     'https://books.example',
     'a/b',
   );
@@ -318,10 +331,10 @@ test('记录请求会排空响应体以尽早释放连接', async () => {
   let drained = false;
 
   await recordBookRead(async () => ({
-    ...fakeResponse({ url: 'https://books.example/read/1' }),
+    ...fakeResponse({ url: 'https://books.example/api/book/1/readstate' }),
     arrayBuffer: async () => {
       drained = true;
-      return new ArrayBuffer(0);
+      return new TextEncoder().encode(JSON.stringify({ err: 'ok' })).buffer;
     },
   }), 'https://books.example', '1');
 
@@ -405,25 +418,15 @@ test('记录请求超过整体时限后释放调用方', async (t) => {
   await assert.rejects(pending, /book\.read_record\.timeout/);
 });
 
-test('HTML 响应排空超时不会把已持久化记录误报为失败', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  let bodyStarted;
-  const bodyStartedPromise = new Promise((resolve) => { bodyStarted = resolve; });
-  let capturedSignal;
-
-  const pending = recordBookRead(async (url, init) => ({
-    ...fakeResponse(),
-    arrayBuffer: async () => {
-      capturedSignal = init.signal;
-      bodyStarted();
-      return new Promise(() => {});
-    },
-  }), 'https://books.example', 'a', 100);
-
-  await bodyStartedPromise;
-  t.mock.timers.tick(100);
-  await pending;
-  assert.equal(capturedSignal.aborted, true);
+test('非 JSON 成功响应不会被误认为状态已写入', async () => {
+  await assert.rejects(
+    recordBookRead(
+      async () => fakeResponse({ contentType: 'text/html', body: '<html></html>' }),
+      'https://books.example',
+      'a',
+    ),
+    /book\.read_record\.response\.invalid/,
+  );
 });
 
 test('JSON 响应体读取超时仍作为无法验证的记录失败', async (t) => {

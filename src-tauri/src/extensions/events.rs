@@ -54,9 +54,7 @@ pub fn start(
             Err(e) => panic!("无法启动 WS Server (尝试了 {start_port}-{port}): {e}"),
         }
     };
-    listener
-        .set_nonblocking(true)
-        .expect("无法设置非阻塞模式");
+    listener.set_nonblocking(true).expect("无法设置非阻塞模式");
 
     let actual_port = listener.local_addr().unwrap().port();
     log::info!("拓展 WS Server 已启动: ws://127.0.0.1:{actual_port}");
@@ -121,48 +119,46 @@ pub fn start(
             }
 
             // 3. 处理客户端消息（pong、unsubscribe 等）并清理断线
-            clients.retain_mut(|client| {
-                match client.ws.read() {
-                    Ok(tungstenite::Message::Text(text)) => {
-                        client.last_activity = std::time::Instant::now();
-                        if text == "ping" {
-                            let _ = client.ws.send(tungstenite::Message::Text("pong".into()));
-                        }
-                        true
+            clients.retain_mut(|client| match client.ws.read() {
+                Ok(tungstenite::Message::Text(text)) => {
+                    client.last_activity = std::time::Instant::now();
+                    if text == "ping" {
+                        let _ = client.ws.send(tungstenite::Message::Text("pong".into()));
                     }
-                    Ok(tungstenite::Message::Binary(_)) => {
-                        client.last_activity = std::time::Instant::now();
-                        true
-                    }
-                    Ok(tungstenite::Message::Ping(data)) => {
-                        client.last_activity = std::time::Instant::now();
-                        let _ = client.ws.send(tungstenite::Message::Pong(data));
-                        true
-                    }
-                    Ok(tungstenite::Message::Pong(_)) => {
-                        client.last_activity = std::time::Instant::now();
-                        true
-                    }
-                    Ok(tungstenite::Message::Close(_)) => {
-                        log::info!("WS 客户端断开: {}", client.extension_name);
-                        false
-                    }
-                    Err(tungstenite::Error::ConnectionClosed)
-                    | Err(tungstenite::Error::AlreadyClosed) => {
-                        log::info!("WS 连接关闭: {}", client.extension_name);
-                        false
-                    }
-                    Err(tungstenite::Error::Io(ref io))
-                        if io.kind() == std::io::ErrorKind::WouldBlock =>
-                    {
-                        true
-                    }
-                    Err(e) => {
-                        log::warn!("WS 错误 ({}): {e}", client.extension_name);
-                        false
-                    }
-                    _ => true,
+                    true
                 }
+                Ok(tungstenite::Message::Binary(_)) => {
+                    client.last_activity = std::time::Instant::now();
+                    true
+                }
+                Ok(tungstenite::Message::Ping(data)) => {
+                    client.last_activity = std::time::Instant::now();
+                    let _ = client.ws.send(tungstenite::Message::Pong(data));
+                    true
+                }
+                Ok(tungstenite::Message::Pong(_)) => {
+                    client.last_activity = std::time::Instant::now();
+                    true
+                }
+                Ok(tungstenite::Message::Close(_)) => {
+                    log::info!("WS 客户端断开: {}", client.extension_name);
+                    false
+                }
+                Err(tungstenite::Error::ConnectionClosed)
+                | Err(tungstenite::Error::AlreadyClosed) => {
+                    log::info!("WS 连接关闭: {}", client.extension_name);
+                    false
+                }
+                Err(tungstenite::Error::Io(ref io))
+                    if io.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    true
+                }
+                Err(e) => {
+                    log::warn!("WS 错误 ({}): {e}", client.extension_name);
+                    false
+                }
+                _ => true,
             });
 
             // 4. 心跳：定期 ping 客户端 + 清理超时连接
@@ -182,10 +178,7 @@ pub fn start(
                     }
                     // 发送 WebSocket Ping，接收方自动回复 Pong
                     if let Err(e) = client.ws.send(tungstenite::Message::Ping(vec![])) {
-                        log::warn!(
-                            "[ext] WS ping 失败 ({}): {e}",
-                            client.extension_name
-                        );
+                        log::warn!("[ext] WS ping 失败 ({}): {e}", client.extension_name);
                         return false;
                     }
                     true

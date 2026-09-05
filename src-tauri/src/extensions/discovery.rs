@@ -68,16 +68,15 @@ pub fn discover_extensions(extensions_dir: &Path) -> Vec<Discovery> {
 
 /// 读取并严格校验 manifest.json。
 pub fn read_and_validate_manifest(path: &Path) -> Result<Manifest, String> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("无法读取 manifest.json: {e}"))?;
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("无法读取 manifest.json: {e}"))?;
 
     // 文件大小限制：64 KB（防止巨大 JSON 攻击）
     if raw.len() > 64 * 1024 {
         return Err("manifest.json 过大（超过 64 KB）".into());
     }
 
-    let manifest: Manifest = serde_json::from_str(&raw)
-        .map_err(|e| format!("manifest.json 解析失败: {e}"))?;
+    let manifest: Manifest =
+        serde_json::from_str(&raw).map_err(|e| format!("manifest.json 解析失败: {e}"))?;
 
     validate_manifest(&manifest)?;
     Ok(manifest)
@@ -93,10 +92,7 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
 
     // 3. api_version：如填写则必须为 "1"
     if !manifest.api_version.is_empty() && manifest.api_version != "1" {
-        return Err(format!(
-            "不支持的 api_version「{}」",
-            manifest.api_version
-        ));
+        return Err(format!("不支持的 api_version「{}」", manifest.api_version));
     }
 
     // 4. display_name：不能为空，最长 128 字符
@@ -199,7 +195,9 @@ fn validate_version(version: &str) -> Result<(), String> {
     }
     let parts: Vec<&str> = version.split('.').collect();
     if parts.len() != 3 {
-        return Err(format!("版本号「{version}」格式无效，需要 major.minor.patch"));
+        return Err(format!(
+            "版本号「{version}」格式无效，需要 major.minor.patch"
+        ));
     }
     for part in &parts {
         if part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()) {

@@ -36,10 +36,12 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_fs::FsExt;
 
 static MOKE_DOWNLOADS_INDEX_LOCK: Mutex<()> = Mutex::new(());
+static MOKE_READER_CACHE_LOCK: Mutex<()> = Mutex::new(());
+const MOKE_READER_CACHE_DIR: &str = "moke-reader-cache";
 
 /// Metadata for a book downloaded by Moke.  The reader uses this small host
 /// API instead of reaching into Moke's IndexedDB, which is private to the
@@ -53,6 +55,8 @@ struct MokeDownloadedBook {
     title: String,
     #[serde(default)]
     author: Option<String>,
+    #[serde(default)]
+    account_key: Option<String>,
     #[serde(default)]
     in_shelf: Option<bool>,
     file_name: String,
@@ -71,6 +75,21 @@ struct MokeDownloadedBookResponse {
     book: MokeDownloadedBook,
     file_path: String,
     file_size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MokeReaderCacheStats {
+    bytes: u64,
+    entries: usize,
+}
+
+#[derive(Clone, Debug)]
+struct MokeReaderCacheEntry {
+    data_path: PathBuf,
+    access_path: PathBuf,
+    bytes: u64,
+    accessed_at: u64,
 }
 
 /// `tauri-plugin-os` reports OpenHarmony as Linux because the Rust target uses
@@ -533,6 +552,142 @@ fn moke_download_storage_stats(
     Ok(DownloadStorageStats { available_bytes })
 }
 
+fn reader_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_cache_dir()
+        .map(|path| path.join(MOKE_READER_CACHE_DIR))
+        .map_err(|error| error.to_string())
+}
+
+fn reader_cache_scope_path(root: &Path, scope: &str) -> Result<PathBuf, String> {
+    if scope.len() != 16
+        || !scope
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("reader cache scope is invalid".into());
+    }
+    Ok(root.join("v1").join(scope))
+}
+
+fn file_modified_millis(metadata: &fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn collect_reader_cache_entries(
+    dir: &Path,
+    entries: &mut Vec<MokeReaderCacheEntry>,
+) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for item in fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let item = item.map_err(|error| error.to_string())?;
+        let path = item.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_reader_cache_entries(&path, entries)?;
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("bin") {
+            continue;
+        }
+        let access_path = path.with_extension("atime");
+        let accessed_at = fs::read_to_string(&access_path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or_else(|| file_modified_millis(&metadata));
+        entries.push(MokeReaderCacheEntry {
+            data_path: path,
+            access_path,
+            bytes: metadata.len(),
+            accessed_at,
+        });
+    }
+    Ok(())
+}
+
+fn reader_cache_entries(app: &AppHandle) -> Result<Vec<MokeReaderCacheEntry>, String> {
+    let mut entries = Vec::new();
+    collect_reader_cache_entries(&reader_cache_root(app)?, &mut entries)?;
+    Ok(entries)
+}
+
+fn reader_cache_evictions(
+    entries: &[MokeReaderCacheEntry],
+    max_bytes: u64,
+) -> Vec<MokeReaderCacheEntry> {
+    let total: u64 = entries.iter().map(|entry| entry.bytes).sum();
+    if total <= max_bytes.saturating_mul(110) / 100 {
+        return Vec::new();
+    }
+    let target = max_bytes.saturating_mul(90) / 100;
+    let mut remaining = total;
+    let mut ordered = entries.to_vec();
+    ordered.sort_by_key(|entry| entry.accessed_at);
+    let mut evictions = Vec::new();
+    for entry in ordered {
+        if remaining <= target {
+            break;
+        }
+        remaining = remaining.saturating_sub(entry.bytes);
+        evictions.push(entry);
+    }
+    evictions
+}
+
+#[tauri::command]
+fn moke_get_reader_cache_stats(app: AppHandle) -> Result<MokeReaderCacheStats, String> {
+    let _guard = MOKE_READER_CACHE_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let entries = reader_cache_entries(&app)?;
+    Ok(MokeReaderCacheStats {
+        bytes: entries.iter().map(|entry| entry.bytes).sum(),
+        entries: entries.len(),
+    })
+}
+
+#[tauri::command]
+fn moke_trim_reader_cache(app: AppHandle, max_bytes: u64) -> Result<(), String> {
+    let _guard = MOKE_READER_CACHE_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let max_bytes = max_bytes.clamp(64 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+    let entries = reader_cache_entries(&app)?;
+    for entry in reader_cache_evictions(&entries, max_bytes) {
+        let _ = fs::remove_file(&entry.data_path);
+        let _ = fs::remove_file(&entry.access_path);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn moke_clear_reader_cache(app: AppHandle, scope: Option<String>) -> Result<(), String> {
+    let _guard = MOKE_READER_CACHE_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let root = reader_cache_root(&app)?;
+    let target = match scope.as_deref() {
+        Some(scope) => reader_cache_scope_path(&root, scope)?,
+        None => root,
+    };
+    if target.exists() {
+        fs::remove_dir_all(&target).map_err(|error| error.to_string())?;
+    }
+    app.emit("moke-reader-cache-cleared", scope)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// Lists local Moke downloads for the embedded Readest home page. Files that
 /// predate the metadata index are still exposed with a filename-derived title.
 #[tauri::command]
@@ -554,7 +709,10 @@ fn moke_list_downloaded_books(app: AppHandle) -> Result<Vec<MokeDownloadedBookRe
             Ok(path) if path.is_file() => {
                 result.push(MokeDownloadedBookResponse {
                     file_path: path.to_string_lossy().into_owned(),
-                    file_size: path.metadata().map(|metadata| metadata.len()).unwrap_or_default(),
+                    file_size: path
+                        .metadata()
+                        .map(|metadata| metadata.len())
+                        .unwrap_or_default(),
                     book: book.clone(),
                 });
                 retained.push(book);
@@ -599,6 +757,7 @@ fn moke_list_downloaded_books(app: AppHandle) -> Result<Vec<MokeDownloadedBookRe
                     book_id: String::new(),
                     title,
                     author: None,
+                    account_key: None,
                     in_shelf: None,
                     file_name,
                     relative_path: None,
@@ -607,7 +766,10 @@ fn moke_list_downloaded_books(app: AppHandle) -> Result<Vec<MokeDownloadedBookRe
                     updated_at,
                 },
                 file_path: path.to_string_lossy().into_owned(),
-                file_size: entry.metadata().map(|metadata| metadata.len()).unwrap_or_default(),
+                file_size: entry
+                    .metadata()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or_default(),
             });
         }
     }
@@ -632,6 +794,9 @@ fn moke_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
         moke_get_download_directory,
         moke_download_storage_stats,
         moke_list_downloaded_books,
+        moke_get_reader_cache_stats,
+        moke_trim_reader_cache,
+        moke_clear_reader_cache,
     ]
 }
 
@@ -840,6 +1005,7 @@ mod download_storage_tests {
             book_id: "1".into(),
             title: "Book".into(),
             author: None,
+            account_key: None,
             in_shelf: None,
             file_name: "book.epub".into(),
             relative_path: Some("books/server/1/epub/book.epub".into()),
@@ -864,6 +1030,63 @@ mod download_storage_tests {
             ),
             Some("/srv/books"),
         );
+    }
+}
+
+#[cfg(test)]
+mod reader_cache_tests {
+    use super::{reader_cache_evictions, reader_cache_scope_path, MokeReaderCacheEntry};
+    use std::path::PathBuf;
+
+    fn entry(name: &str, bytes: u64, accessed_at: u64) -> MokeReaderCacheEntry {
+        MokeReaderCacheEntry {
+            data_path: PathBuf::from(format!("{name}.bin")),
+            access_path: PathBuf::from(format!("{name}.atime")),
+            bytes,
+            accessed_at,
+        }
+    }
+
+    #[test]
+    fn reader_cache_trims_oldest_entries_from_above_110_percent_to_90_percent() {
+        let entries = vec![
+            entry("oldest", 30, 1),
+            entry("middle", 30, 2),
+            entry("newest", 60, 3),
+        ];
+        assert!(reader_cache_evictions(&entries, 110).is_empty());
+        let evictions = reader_cache_evictions(&entries, 100);
+        assert_eq!(evictions.len(), 1);
+        assert_eq!(evictions[0].data_path, PathBuf::from("oldest.bin"));
+    }
+
+    #[test]
+    fn reader_cache_eviction_handles_zero_sized_and_tied_entries_deterministically() {
+        let entries = vec![
+            entry("empty", 0, 0),
+            entry("old", 80, 1),
+            entry("new", 40, 2),
+        ];
+        let evictions = reader_cache_evictions(&entries, 100);
+        assert_eq!(
+            evictions
+                .iter()
+                .map(|entry| entry.data_path.clone())
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from("empty.bin"), PathBuf::from("old.bin")],
+        );
+    }
+
+    #[test]
+    fn reader_cache_scope_is_confined_to_the_versioned_cache_root() {
+        let root = PathBuf::from("cache-root");
+        assert_eq!(
+            reader_cache_scope_path(&root, "0123456789abcdef").unwrap(),
+            root.join("v1").join("0123456789abcdef"),
+        );
+        for invalid in ["", "../outside", "0123456789ABCDEf", "0123456789abcdef0"] {
+            assert!(reader_cache_scope_path(&root, invalid).is_err());
+        }
     }
 }
 
@@ -1075,10 +1298,7 @@ mod fs_scope_tests {
 
         assert_eq!(dev["identifier"], "reader-dev-remote");
         assert_eq!(dev["local"], false);
-        assert_eq!(
-            dev["remote"]["urls"][0],
-            "http://localhost:3001/readest/**"
-        );
+        assert_eq!(dev["remote"]["urls"][0], "http://localhost:3001/readest/**");
         assert_eq!(dev["windows"], reader["windows"]);
         assert_eq!(dev["permissions"], reader["permissions"]);
     }

@@ -38,3 +38,6 @@ src-tauri/bin/readest-*
 CODE_NEED/
 tsconfig.tsbuildinfo
 .pnpm-store/
+.playwright-cli
+/output
+.codegraph

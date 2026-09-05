@@ -1,4 +1,5 @@
 import type { ReadingProgressPayload } from './reading-progress';
+import type { MokeBookSource } from './moke-book-source';
 
 export const isSingleWebviewRuntime = (platform: string): boolean =>
   platform === 'ohos' || platform === 'android' || platform === 'ios';
@@ -396,27 +397,31 @@ export async function openEmbeddedReaderHome({
 
 export function buildEmbeddedReaderUrl({
   filePath,
+  source,
   eink,
   debugPanel = false,
   mokeBookId,
   restoreProgress,
   serverUrl,
 }: {
-  filePath: string;
+  filePath?: string;
+  source?: MokeBookSource;
   eink: boolean;
   debugPanel?: boolean;
-  mokeBookId: string;
+  mokeBookId?: string;
   restoreProgress: ReadingProgressPayload | null;
   serverUrl?: string;
 }): string {
   const params = new URLSearchParams({
-    file: filePath,
     moke: '1',
     mokeEink: eink ? '1' : '0',
     mokeDebug: debugPanel ? '1' : '0',
-    mokeBookId,
+    mokeBookId: mokeBookId || source?.bookId || '',
     mokeReturnTo: '/library',
   });
+
+  if (filePath) params.set('file', filePath);
+  if (source) params.set('mokeSource', JSON.stringify(source));
 
   setServerUrlParam(params, serverUrl);
 

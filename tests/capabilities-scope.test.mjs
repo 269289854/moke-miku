@@ -185,6 +185,20 @@ test('main window does not inherit reader-only plugins', () => {
   }
 });
 
+test('main window native response cache is confined to its private cache subtree', () => {
+  const main = readCapability('src-tauri/capabilities/default.json');
+  const expectedRoot = '$APPCACHE/moke-http-cache';
+  const expectedFiles = `${expectedRoot}/**`;
+
+  assert.ok(permissionPaths(findPermission(main, 'fs:allow-mkdir')).includes(expectedRoot));
+  assert.deepEqual(permissionPaths(findPermission(main, 'fs:read-files')), [expectedFiles]);
+  assert.deepEqual(permissionPaths(findPermission(main, 'fs:read-dirs')), [expectedRoot, expectedFiles]);
+  assert.deepEqual(permissionPaths(findPermission(main, 'fs:write-all')), [
+    expectedRoot,
+    expectedFiles,
+  ]);
+});
+
 test('reader windows can read Moke books but cannot write the books directory', () => {
   for (const file of [
     'src-tauri/capabilities/reader.json',
@@ -269,20 +283,29 @@ test('reader capabilities preserve settings, RSS, and updater operations', () =>
   }
 });
 
-test('main filesystem writes are limited to downloaded books', () => {
+test('main filesystem writes are limited to downloads and the response-cache subtree', () => {
   const main = readCapability('src-tauri/capabilities/default.json');
   const writePermissions = new Set([
     'fs:allow-mkdir',
     'fs:allow-open',
     'fs:allow-write',
     'fs:allow-remove',
+    'fs:write-all',
   ]);
   const paths = main.permissions
     .filter((permission) => writePermissions.has(permissionIdentifier(permission)))
     .flatMap(permissionPaths);
 
   assert.ok(paths.length > 0);
-  assert.ok(paths.every((path) => path === '$APPDATA/books' || path.startsWith('$APPDATA/books/')));
+  assert.ok(
+    paths.every(
+      (path) =>
+        path === '$APPDATA/books' ||
+        path.startsWith('$APPDATA/books/') ||
+        path === '$APPCACHE/moke-http-cache' ||
+        path.startsWith('$APPCACHE/moke-http-cache/'),
+    ),
+  );
 });
 
 test('main download lifecycle grants scoped stat and atomic rename operations', () => {

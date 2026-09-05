@@ -35,7 +35,10 @@ async function login(username: string, password: string, captchaData?: any): Pro
     method: 'POST',
     body,
     credentials: 'include',
-  });
+    // Authentication must tolerate slow mobile DNS/TLS setup. The default
+    // 8-second connect timeout is intentionally kept for ordinary requests.
+    connectTimeout: 20_000,
+  } as RequestInit & { connectTimeout: number });
   return response.json();
 }
 
