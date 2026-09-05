@@ -38,3 +38,4 @@ src-tauri/bin/readest-*
 CODE_NEED/
 tsconfig.tsbuildinfo
 .pnpm-store/
+.codegraph
