@@ -80,7 +80,8 @@ fn read_storage(ext_dir: &Path) -> Result<HashMap<String, String>, String> {
         return Ok(HashMap::new());
     }
 
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("无法读取存储文件: {e}"))?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("无法读取存储文件: {e}"))?;
 
     // 安全：限制文件大小（防止恶意超大文件）
     if raw.len() > 10 * 1024 * 1024 {
@@ -88,8 +89,8 @@ fn read_storage(ext_dir: &Path) -> Result<HashMap<String, String>, String> {
         return Err("存储文件过大（超过 10 MB）".into());
     }
 
-    let storage: HashMap<String, String> =
-        serde_json::from_str(&raw).map_err(|e| format!("存储文件 JSON 解析失败: {e}"))?;
+    let storage: HashMap<String, String> = serde_json::from_str(&raw)
+        .map_err(|e| format!("存储文件 JSON 解析失败: {e}"))?;
 
     // 校验所有 key
     for key in storage.keys() {
@@ -104,10 +105,12 @@ fn write_storage(ext_dir: &Path, storage: &HashMap<String, String>) -> Result<()
 
     // 确保目录存在
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建存储目录失败: {e}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建存储目录失败: {e}"))?;
     }
 
-    let json = serde_json::to_string_pretty(storage).map_err(|e| format!("序列化存储失败: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(storage).map_err(|e| format!("序列化存储失败: {e}"))?;
 
     // 原子写入：先写临时文件再替换
     let tmp_path = ext_dir.join("storage.tmp");
@@ -137,9 +140,7 @@ pub fn validate_key(key: &str) -> Result<(), String> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
     {
-        return Err(format!(
-            "key「{key}」包含非法字符（只允许字母、数字、下划线、点、连字符）"
-        ));
+        return Err(format!("key「{key}」包含非法字符（只允许字母、数字、下划线、点、连字符）"));
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! 拓展生命周期管理：启用/禁用/卸载、后端进程启停、状态持久化。
 
-use super::{BackendConfig, EnabledExtension, Manifest};
+use super::{EnabledExtension, BackendConfig, Manifest};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -47,11 +47,7 @@ pub fn allocate_port(next_port: &Arc<AtomicU16>, port_range_start: u16) -> u16 {
 pub fn reserve_after_port(next_port: &Arc<AtomicU16>, used_port: u16) {
     let next = used_port.saturating_add(1).clamp(PORT_MIN, PORT_MAX);
     let _ = next_port.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-        if current <= used_port {
-            Some(next)
-        } else {
-            None
-        }
+        if current <= used_port { Some(next) } else { None }
     });
 }
 
@@ -77,7 +73,10 @@ pub fn start_backend(
     let exe_path = ext_dir.join(&backend.executable);
 
     if !exe_path.exists() {
-        return Err(format!("后端可执行文件不存在: {}", exe_path.display()));
+        return Err(format!(
+            "后端可执行文件不存在: {}",
+            exe_path.display()
+        ));
     }
 
     // 构建参数，替换 {EXT_PORT} 占位符
@@ -93,10 +92,7 @@ pub fn start_backend(
         .current_dir(ext_dir)
         .env_clear()
         // 最基本的 Windows 运行环境
-        .env(
-            "SYSTEMROOT",
-            std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".into()),
-        )
+        .env("SYSTEMROOT", std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".into()))
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         // 传递 token 和宿主服务端口，拓展后端可通过环境变量获取
         .env("MOKE_EXT_TOKEN", token)
@@ -126,7 +122,11 @@ pub fn start_backend(
         ));
     }
 
-    log::info!("启动拓展后端: {} (PID: {})", exe_path.display(), child.id());
+    log::info!(
+        "启动拓展后端: {} (PID: {})",
+        exe_path.display(),
+        child.id()
+    );
 
     Ok(child)
 }
@@ -167,17 +167,21 @@ pub fn save_runtime_state(
         })
         .collect();
 
-    let state = RuntimeStateFile { enabled: persisted };
+    let state = RuntimeStateFile {
+        enabled: persisted,
+    };
 
-    let json =
-        serde_json::to_string_pretty(&state).map_err(|e| format!("序列化运行时状态失败: {e}"))?;
+    let json = serde_json::to_string_pretty(&state)
+        .map_err(|e| format!("序列化运行时状态失败: {e}"))?;
 
     let path = extensions_dir.join(RUNTIME_STATE_FILE);
 
     // 先写临时文件，再原子替换（防写入过程中断电导致文件损坏）
     let tmp_path = extensions_dir.join("runtime.tmp");
-    std::fs::write(&tmp_path, &json).map_err(|e| format!("写入临时状态文件失败: {e}"))?;
-    std::fs::rename(&tmp_path, &path).map_err(|e| format!("替换状态文件失败: {e}"))?;
+    std::fs::write(&tmp_path, &json)
+        .map_err(|e| format!("写入临时状态文件失败: {e}"))?;
+    std::fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("替换状态文件失败: {e}"))?;
 
     Ok(())
 }
@@ -236,14 +240,7 @@ pub fn restore_runtime_state_inner(
         let backend_child = if let Some(entry) = &manifest.entry {
             if let Some(backend) = &entry.backend {
                 let ext_dir = extensions_dir.join(&name);
-                match start_backend(
-                    &ext_dir,
-                    backend,
-                    persisted.port,
-                    &persisted.token,
-                    api_port,
-                    ws_port,
-                ) {
+                match start_backend(&ext_dir, backend, persisted.port, &persisted.token, api_port, ws_port) {
                     Ok(child) => Some(child),
                     Err(e) => {
                         log::warn!("恢复拓展「{name}」后端失败: {e}");

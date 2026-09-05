@@ -68,7 +68,7 @@ function readerHandlerCommands(source) {
 }
 
 test('Moke 构建只暴露独立 Readest Reader 页面', () => {
-  assert.match(gitmodules, /https:\/\/github\.com\/hehetoshang\/readest-reader\.git/);
+  assert.match(gitmodules, /https:\/\/github\.com\/269289854\/readest-reader\.git/);
   assert.equal(contract.id, 'moke.readest.embed.v1');
   assert.equal(contract.readerRoute, '/readest/reader');
   assert.equal(contract.progressApi.credentials, 'include');

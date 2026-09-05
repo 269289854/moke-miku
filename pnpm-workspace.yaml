@@ -2,4 +2,3 @@ packages:
   - "."
 allowBuilds:
   sharp: true
-  unrs-resolver: set this to true or false
