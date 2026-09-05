@@ -9,6 +9,7 @@ import {
   drainResponseBodyQuietly,
   getErrorMessage,
   isAbsoluteHttpUrl,
+  isTauriIpcAvailable,
   MokeApiError,
   readApiJson,
   readJsonResponse,
@@ -25,6 +26,11 @@ import {
   type UserInfoResponse,
 } from '@/lib/server-session';
 import { discoverGeneralServerCapabilities } from '@/lib/server-capabilities';
+import {
+  cachedRequest,
+  getMokeCacheScope,
+  invalidateMokeCacheTags,
+} from '@/lib/moke-cache';
 export { getErrorMessage, MokeApiError, readApiJson, readJsonResponse } from '@/lib/api-core';
 
 const appPlatform = resolveAppPlatform(process.env.NEXT_PUBLIC_APP_PLATFORM);
@@ -99,6 +105,15 @@ export async function request(
   const startedAt = Date.now();
   try {
     if (isTauriApp) {
+      const internals = typeof window === 'undefined'
+        ? undefined
+        : (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      if (!isTauriIpcAvailable(internals)) {
+        throw new MokeApiError(
+          '应用的原生通信组件没有启动。请更新 Android System WebView，完全退出应用后重新打开。',
+          'tauri.ipc.unavailable',
+        );
+      }
       const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
       // Tauri 桌面端：使用插件 fetch。需要显式放宽以兼容自建 Talebook 服务器：
       // - danger.acceptInvalidCerts: 允许自签名 / 内网 HTTPS 证书
@@ -132,6 +147,36 @@ export async function request(
   return attachSafeJsonReader(response);
 }
 
+/** Cache a read-only JSON response while keeping all writes and auth endpoints uncached. */
+export async function requestCachedJson(
+  url: string,
+  options: RequestInit | undefined,
+  ttlMs: number,
+  staleMs = 7 * 24 * 60 * 60 * 1000,
+): Promise<Response> {
+  if ((options?.method || 'GET').toUpperCase() !== 'GET') return request(url, options);
+  const scope = await getMokeCacheScope(url);
+  const parsed = new URL(url);
+  const tags = ['account'];
+  if (parsed.pathname === '/api/shelf') tags.push('shelf');
+  if (parsed.pathname === '/api/library') tags.push('library');
+  if (parsed.pathname === '/api/search') tags.push('search');
+  const detailMatch = parsed.pathname.match(/^\/api\/book\/([^/]+)$/);
+  if (detailMatch?.[1]) tags.push(`book:${detailMatch[1]}`);
+  return cachedRequest(
+    url,
+    { kind: 'api', scope, ttlMs, staleMs, tags },
+    (conditionalHeaders) => {
+      const headers = new Headers(options?.headers);
+      conditionalHeaders.forEach((value, key) => headers.set(key, value));
+      return request(url, { ...options, headers });
+    },
+    // A caller-owned AbortSignal must not share a promise with another caller:
+    // aborting the first React effect would otherwise cancel its replacement.
+    { dedupe: !options?.signal },
+  );
+}
+
 /**
  * 通过带认证的 request 获取图片资源，返回可直接用于 <img src> 的 object URL。
  *
@@ -149,7 +194,18 @@ export async function fetchImageObjectUrl(imageUrl: string): Promise<string> {
   const startedAt = Date.now();
   debugLog('info', 'image', `→ GET ${imageUrl}`);
   try {
-    const response = await request(imageUrl, { credentials: 'include' });
+    const scope = await getMokeCacheScope();
+    const response = await cachedRequest(
+      imageUrl,
+      {
+        kind: 'image',
+        scope,
+        ttlMs: 30 * 24 * 60 * 60 * 1000,
+        staleMs: 7 * 24 * 60 * 60 * 1000,
+        tags: ['account'],
+      },
+      (headers) => request(imageUrl, { credentials: 'include', headers }),
+    );
     if (!response.ok) {
       debugLog(
         'error',
@@ -205,17 +261,58 @@ export async function fetchServerInfo(): Promise<{ err: string; msg?: string; ti
     // 未连接服务器时直接返回空信息，避免发起无前缀 URL 的请求
     return { err: 'no_server', title: '', version: '' };
   }
-  const response = await request(`${serverUrl}/api/user/info`, {
-    credentials: 'include',
-  });
-  const data = await readJsonResponse<UserInfoResponse>(response);
+  const scope = await getMokeCacheScope(serverUrl);
+  const response = await cachedRequest(
+    `${serverUrl}/api/moke-cache/server-info`,
+    {
+      kind: 'api',
+      scope,
+      ttlMs: 10 * 60 * 1000,
+      staleMs: 7 * 24 * 60 * 60 * 1000,
+      tags: ['account', 'server-info'],
+    },
+    async (conditionalHeaders) => {
+      const upstream = await request(`${serverUrl}/api/user/info`, {
+        credentials: 'include',
+        headers: conditionalHeaders,
+      });
+      if (upstream.status === 304) return upstream;
+      const data = await readJsonResponse<UserInfoResponse>(upstream.clone());
+      return new Response(JSON.stringify({
+        err: data.err,
+        msg: data.msg,
+        title: data.sys?.title || '',
+        version: data.sys?.version || '',
+      }), {
+        status: upstream.status,
+        headers: {
+          'content-type': 'application/json',
+          ...(upstream.headers.get('etag') ? { etag: upstream.headers.get('etag')! } : {}),
+          ...(upstream.headers.get('last-modified')
+            ? { 'last-modified': upstream.headers.get('last-modified')! }
+            : {}),
+        },
+      });
+    },
+  );
+  const data = await readJsonResponse<{ err: string; msg?: string; title: string; version: string }>(response);
 
   return {
     err: data.err,
     msg: data.msg,
-    title: data.sys?.title || '',
-    version: data.sys?.version || '',
+    title: data.title || '',
+    version: data.version || '',
   };
+}
+
+export async function invalidateBookReadCaches(serverUrl: string, bookId: string): Promise<void> {
+  const scope = await getMokeCacheScope(serverUrl);
+  await invalidateMokeCacheTags(scope, ['shelf', 'library', 'search', `book:${bookId}`]);
+}
+
+export async function invalidateLibraryReadCaches(serverUrl: string): Promise<void> {
+  const scope = await getMokeCacheScope(serverUrl);
+  await invalidateMokeCacheTags(scope, ['library', 'search']);
 }
 
 async function probeJsonEndpoint(serverUrl: string, path: string): Promise<boolean> {
@@ -294,6 +391,10 @@ export async function validateServerConnection(serverUrl: string): Promise<{ err
         credentials: 'include',
       });
     } catch (e) {
+      if (e instanceof MokeApiError && e.code === 'tauri.ipc.unavailable') {
+        console.error('[validateServerConnection] Tauri IPC unavailable');
+        return { err: e.code, msg: e.message };
+      }
       const errorMsg = e instanceof Error ? e.message : String(e);
       console.error('[validateServerConnection] network error:', errorMsg);
       debugLog('error', 'validate', `连接失败 (尝试 ${attempt + 1}/${maxRetries + 1})`, errorMsg);

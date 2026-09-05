@@ -4,6 +4,7 @@ import { downloadBookBlob, request, streamBookDownload } from '@/lib/api';
 import { beginOfflineDownload, endOfflineDownload } from '@/lib/offline-book-core';
 import { saveOfflineBook, saveOfflineBookStream } from '@/lib/offline-books';
 import { useSettingsStore } from '@/lib/store/settings';
+import { useServerStore } from '@/lib/store/server';
 
 export { beginOfflineDownload, endOfflineDownload };
 
@@ -20,6 +21,7 @@ export interface DownloadOfflineBookOptions {
   signal?: AbortSignal;
   resume?: boolean;
   preservePartialOnFailure?: boolean;
+  accountKey?: string;
 }
 
 async function fetchCoverDataUrl(coverUrl?: string, signal?: AbortSignal): Promise<string | undefined> {
@@ -42,6 +44,9 @@ async function fetchCoverDataUrl(coverUrl?: string, signal?: AbortSignal): Promi
 /** Unified entry: Tauri streams to a resumable file; web stores one Blob in IndexedDB. */
 export async function downloadAndSaveOfflineBook(options: DownloadOfflineBookOptions): Promise<void> {
   const format = options.format.toLowerCase();
+  const currentUser = useServerStore.getState().user;
+  const accountKey = options.accountKey
+    || String(currentUser?.id || currentUser?.username || currentUser?.name || 'anonymous');
   const coverDataUrl = await fetchCoverDataUrl(options.coverUrl, options.signal);
   if (process.env.NEXT_PUBLIC_APP_PLATFORM === 'tauri') {
     const downloadDirectory = useSettingsStore.getState().downloadDirectory;
@@ -58,6 +63,7 @@ export async function downloadAndSaveOfflineBook(options: DownloadOfflineBookOpt
       downloadDirectory,
       resume: options.resume,
       preservePartialOnFailure: options.preservePartialOnFailure,
+      accountKey,
       write: async (writer) => streamBookDownload(options.bookId, format, {
         write: (chunk) => writer.write(chunk),
         onProgress: options.onProgress,
@@ -87,5 +93,6 @@ export async function downloadAndSaveOfflineBook(options: DownloadOfflineBookOpt
     fileName: `${options.title}.${format}`,
     mimeType: blob.type || 'application/octet-stream',
     blob,
+    accountKey,
   });
 }

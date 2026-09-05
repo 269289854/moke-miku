@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { ArrowLeft, ChevronRight, Star, FileText, HardDrive, Calendar, BookOpen, Building2, Barcode, Tags, Users, LibraryBig, FileBadge2, Bookmark, Trash2 } from 'lucide-react';
 import { requestAnimatedBack } from '@/lib/native-back';
 import { DesktopLayout } from '@/components/layout/DesktopLayout';
-import { getErrorMessage, MokeApiError, readApiJson, request } from '@/lib/api';
+import { getErrorMessage, invalidateBookReadCaches, MokeApiError, readApiJson, request, requestCachedJson } from '@/lib/api';
 import { deleteOfflineBook, getOfflineBook, listOfflineBooks, removeOfflinePartial, setOfflineBookShelfState, type OfflineBookRecord } from '@/lib/offline-books';
 import {
   beginOfflineDownload,
@@ -25,7 +25,7 @@ import {
   readStateShelfState,
   shouldLoadReadingStateFallback,
 } from '@/lib/book-detail-core';
-import { openAndRecordBookRead, prepareEmbeddedBookOpen, recordBookRead, READ_RECORD_NAV_TIMEOUT_MS } from '@/lib/book-read';
+import { openAndRecordBookRead, recordBookRead, READ_RECORD_NAV_TIMEOUT_MS } from '@/lib/book-read';
 import {
   getOfflineDownloadSnapshot,
   removeOfflineDownloadSnapshot,
@@ -41,7 +41,14 @@ import {
   type BookAnnotation,
 } from '@/lib/annotations';
 import { shouldRequestBookAnnotations } from '@/lib/annotation-access';
-import { openBookWithSystemDefault, openOfflineBook } from '@/lib/open-offline-book';
+import { openBookWithSystemDefault } from '@/lib/open-offline-book';
+import {
+  buildMokeSourceIdentity,
+  normalizeOnlineFormat,
+  readerCacheLimitForPlatform,
+  selectPreferredBookFormat,
+  type MokeBookSource,
+} from '@/lib/moke-book-source';
 
 interface BookDetail {
   id: string;
@@ -110,6 +117,7 @@ function DetailContent() {
     ).values(),
   );
   const primaryFile = bookFiles[0];
+  const onlineFormat = normalizeOnlineFormat(selectedFormat);
   const fileFormats = bookFiles.map((file) => file.format.toUpperCase());
   const ratingValue = typeof book?.rating === 'number' ? book.rating : book?.rating?.value;
   const handleAnnotationAuthRequired = useCallback(() => router.push('/login'), [router]);
@@ -187,7 +195,11 @@ function DetailContent() {
         setInShelf(localRecords.some((item) => item.inShelf === true));
         return;
       }
-      const res = await request(`${serverUrl}/api/book/${id}`, { credentials: 'include', signal: controller.signal });
+      const res = await requestCachedJson(
+        `${serverUrl}/api/book/${id}`,
+        { credentials: 'include', signal: controller.signal },
+        30 * 60 * 1000,
+      );
       const data = await readApiJson<{ err?: string; msg?: string; book?: BookDetail; data?: BookDetail }>(res, '书籍详情解析失败。', ['ok', 'user.need_login']);
       if (data.err === 'user.need_login') {
         router.push('/login');
@@ -199,7 +211,7 @@ function DetailContent() {
         setBook(nextBook);
         const detailShelfState = bookDetailShelfState(nextBook);
         setInShelf(detailShelfState ?? false);
-        const format = (nextBook?.files?.[0]?.format || 'epub').toLowerCase();
+        const format = selectPreferredBookFormat(nextBook.files) ?? 'epub';
         setSelectedFormat(format);
         // 游客不访问需要登录的 readstate 接口。仅对已登录用户兼容旧版
         // Talebook 未在详情响应中携带书架状态的情况。
@@ -244,12 +256,13 @@ function DetailContent() {
     if (!book) return;
 
     try {
-      await request(`${serverUrl}/api/book/${book.id}/readstate`, {
+      const response = await request(`${serverUrl}/api/book/${book.id}/readstate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify(payload),
       });
+      if (response.ok) await invalidateBookReadCaches(serverUrl, String(book.id));
     } catch (error) {
       console.warn('Failed to update reading state:', error);
     }
@@ -293,6 +306,7 @@ function DetailContent() {
       }
 
       setInShelf(nextInShelf);
+      await invalidateBookReadCaches(serverUrl, String(book.id));
       void setOfflineBookShelfState(serverUrl, String(book.id), nextInShelf)
         .catch((error) => console.warn('Failed to cache offline shelf state:', error));
       setBook((current) => current ? {
@@ -334,6 +348,7 @@ function DetailContent() {
               bookId: String(book.id),
               title: book.title,
               author: authorNames.join('、'),
+              accountKey: String(user?.id || user?.username || user?.name || 'anonymous'),
               inShelf,
               format: selectedFormat,
               coverUrl,
@@ -360,7 +375,7 @@ function DetailContent() {
       if (finalStatus !== 'completed') throw new Error(`book.download.${finalStatus || 'interrupted'}`);
       setDownloadProgress(100);
       void updateReadingState({ download: 1 });
-      // 等待下一个版本更新后加入read_state: 1
+      // Download state is separate; opening the book records read_state.
       setDownloaded(true);
       setBook((current) => current ? {
         ...current,
@@ -394,7 +409,7 @@ function DetailContent() {
     }
   };
 
-  const handleOfflineRead = async (targetAnnotation?: BookAnnotation) => {
+  const handleRead = async (targetAnnotation?: BookAnnotation) => {
     if (!book) return;
     const openingMessage = '正在打开书籍，请稍候。';
     // 打开/记录在途时拦截重复点击，避免重复开窗和重复计数。
@@ -418,20 +433,40 @@ function DetailContent() {
       const loadRecord = async () => offlineMode && offlineRecord?.format === selectedFormat
         ? offlineRecord
         : getOfflineBook(activeServerUrl, id!, selectedFormat);
-      if (offlineMode) {
-        const record = await loadRecord();
-        if (!record?.filePath || process.env.NEXT_PUBLIC_APP_PLATFORM !== 'tauri') {
-          setMessage('无法打开书籍：未找到本地文件或当前环境不支持。');
-          return;
-        }
-        await openOfflineBook(record, router.push);
+      const [record, initialProgress, currentPlatform] = await Promise.all([
+        loadRecord(),
+        targetAnnotation
+          ? Promise.resolve(annotationReaderProgress(targetAnnotation, book.id))
+          : fetchReadingProgress(book.id),
+        getMokeRuntimePlatform(),
+      ]);
+
+      if (offlineMode && !record?.filePath) {
+        setMessage('无法打开书籍：未找到本地文件。');
+        return;
+      }
+      if (!record && !onlineFormat) {
+        setMessage('该格式需要先下载，当前在线阅读支持 EPUB 和 PDF。');
         return;
       }
 
-      const useSystemReader = useSettingsStore.getState().readerPreference === 'system'
+      const recordOpenedBook = async (onlineRead: boolean, timeoutMs?: number) => {
+        await recordBookRead(request, serverUrl, book.id, timeoutMs, onlineRead);
+        await invalidateBookReadCaches(serverUrl, String(book.id));
+        setBook((current) => current ? {
+          ...current,
+          state: {
+            ...current.state,
+            read_state: 1,
+            ...(onlineRead ? { online_read: 1 } : {}),
+          },
+        } : current);
+      };
+
+      const useSystemReader = Boolean(record)
+        && useSettingsStore.getState().readerPreference === 'system'
         && !targetAnnotation;
-      if (useSystemReader) {
-        const record = await loadRecord();
+      if (useSystemReader && record) {
         if (!record?.filePath || process.env.NEXT_PUBLIC_APP_PLATFORM !== 'tauri') {
           setMessage('无法打开书籍：未找到本地文件或当前环境不支持。');
           return;
@@ -439,7 +474,7 @@ function DetailContent() {
         await openAndRecordBookRead({
           open: () => openBookWithSystemDefault(record.id),
           onOpened: () => setOpeningReader(false),
-          record: () => recordBookRead(request, serverUrl, book.id),
+          record: () => recordOpenedBook(false),
           onRecordError: (error) => {
             console.warn('Book opened in the system app, but the read record could not be saved:', error);
             setMessage('书籍已打开，但阅读记录同步失败。');
@@ -448,29 +483,44 @@ function DetailContent() {
         return;
       }
 
-      const prepared = await prepareEmbeddedBookOpen({
-        loadRecord,
-        loadProgress: async () => targetAnnotation
-          ? annotationReaderProgress(targetAnnotation, book.id)
-          : fetchReadingProgress(book.id),
-        loadPlatform: getMokeRuntimePlatform,
-        beforeSingleWebviewOpen: async (record) => {
-          if (!record?.filePath) return;
-          await recordBookRead(request, serverUrl, book.id, READ_RECORD_NAV_TIMEOUT_MS);
-        },
-        onBeforeSingleWebviewOpenError: (error) => {
-          console.warn('Read record could not be saved before navigation:', error);
-        },
-      });
-      const { record, platform: currentPlatform } = prepared;
-      if (!record?.filePath || process.env.NEXT_PUBLIC_APP_PLATFORM !== 'tauri') {
-        setMessage('无法打开书籍：未找到本地文件或当前环境不支持。');
+      if (process.env.NEXT_PUBLIC_APP_PLATFORM !== 'tauri') {
+        setMessage('在线阅读首轮仅支持原生客户端。');
         return;
       }
-      // 通过统一的 open_reader 命令打开阅读器：阅读器作为打包资源随应用一起
-      // 发布（合为一个应用），并在自己的独立窗口中打开书籍。后续更换阅读器
-      // 只需替换打包资源，无需改动这里的调用方式。
-      let restoreProgress = prepared.restoreProgress;
+
+      const account = record?.accountKey
+        || String(user?.id || user?.username || user?.name || 'anonymous');
+      const identity = buildMokeSourceIdentity({
+        serverUrl: activeServerUrl,
+        account,
+        bookId: String(book.id),
+        format: selectedFormat,
+      });
+      const source: MokeBookSource = record?.filePath
+        ? {
+            kind: 'local',
+            bookId: String(book.id),
+            format: selectedFormat,
+            title: book.title,
+            author: authorNames.join('、'),
+            filePath: record.filePath,
+            fileVersion: record.sourceSignature || `${record.updatedAt}:${record.size}`,
+            cacheLimitBytes: readerCacheLimitForPlatform(currentPlatform),
+            ...identity,
+          }
+        : {
+            kind: 'remote',
+            bookId: String(book.id),
+            format: onlineFormat!,
+            title: book.title,
+            author: authorNames.join('、'),
+            serverUrl: activeServerUrl,
+            url: `${activeServerUrl.replace(/\/+$/, '')}/api/book/${encodeURIComponent(String(book.id))}.${onlineFormat}?mode=read`,
+            cacheLimitBytes: readerCacheLimitForPlatform(currentPlatform),
+            ...identity,
+          };
+
+      let restoreProgress = initialProgress;
       if (targetAnnotation && restoreProgress) {
         annotationNavigationId = beginAnnotationLocateNavigation(serverUrl, book.id);
         restoreProgress = {
@@ -481,8 +531,14 @@ function DetailContent() {
       }
 
       if (isSingleWebviewRuntime(currentPlatform)) {
+        try {
+          await recordOpenedBook(!record?.filePath, READ_RECORD_NAV_TIMEOUT_MS);
+        } catch (error) {
+          console.warn('Read state could not be saved before navigation:', error);
+        }
         const href = buildEmbeddedReaderUrl({
-          filePath: record.filePath,
+          filePath: record?.filePath,
+          source,
           eink: useSettingsStore.getState().eink,
           debugPanel: getDebugPanelLaunchState(),
           mokeBookId: String(book.id),
@@ -495,22 +551,25 @@ function DetailContent() {
         return;
       }
 
+      const openReader = async () => {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('open_reader', {
+          filePath: record?.filePath,
+          mokeSource: source,
+          eink: useSettingsStore.getState().eink,
+          debugPanel: getDebugPanelLaunchState(),
+          mokeBookId: String(book.id),
+          restoreProgress,
+        });
+      };
+
       await openAndRecordBookRead({
-        open: async () => {
-          const { invoke } = await import('@tauri-apps/api/core');
-          await invoke('open_reader', {
-            filePath: record.filePath,
-            eink: useSettingsStore.getState().eink,
-            debugPanel: getDebugPanelLaunchState(),
-            mokeBookId: String(book.id),
-            restoreProgress,
-          });
-        },
+        open: openReader,
         // The independent reader window is already usable. Release the
         // visible loading state now, while openingReaderRef continues to
         // block duplicate opens until the record request settles.
         onOpened: () => setOpeningReader(false),
-        record: () => recordBookRead(request, serverUrl, book.id),
+        record: () => recordOpenedBook(!record?.filePath),
         onRecordError: (error) => {
           console.warn('Reader opened, but the read record could not be saved:', error);
           setMessage('书籍已打开，但阅读记录同步失败。');
@@ -519,7 +578,7 @@ function DetailContent() {
     } catch (e) {
       if (annotationNavigationId) clearAnnotationLocateProgressSuppression(annotationNavigationId);
       console.error('Failed to open book:', e);
-      setMessage(targetAnnotation ? '打开书籍或定位笔记失败，请重试。' : '打开书籍失败。');
+      setMessage(targetAnnotation ? '打开书籍或定位笔记失败，请重试。' : '打开书籍失败，可下载后重试。');
     } finally {
       finishOpening();
     }
@@ -600,22 +659,25 @@ function DetailContent() {
             {isTauriApp ? (
               <>
                 <button
-                  onClick={() => void (downloaded ? handleOfflineRead() : handleDownload())}
-                  disabled={downloading || openingReader}
-                  className={`relative mt-5 inline-flex h-11 w-full items-center justify-center overflow-hidden rounded-xl text-sm font-semibold shadow-md transition-all duration-200 active:scale-[0.98] hover:shadow-lg disabled:opacity-100 md:mt-6 md:w-[220px] ${downloading ? 'border border-primary/15 bg-primary/15 text-primary-foreground' : 'bg-primary text-primary-foreground hover:bg-primary/90'}`}
+                  onClick={() => void handleRead()}
+                  disabled={downloading || openingReader || (!downloaded && !onlineFormat)}
+                  className="relative mt-5 inline-flex h-11 w-full items-center justify-center overflow-hidden rounded-xl bg-primary text-sm font-semibold text-primary-foreground shadow-md transition-all duration-200 hover:bg-primary/90 hover:shadow-lg active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 md:mt-6 md:w-[220px]"
                 >
-                  {downloading && <span className="absolute inset-0 bg-primary/15" />}
-                  {downloading && (
-                    <span
-                      className="absolute inset-y-0 left-0 bg-primary transition-[width] duration-150 ease-out"
-                      style={{ width: `${downloadProgress}%` }}
-                    />
-                  )}
-                  <span className="relative z-10 flex items-center justify-center gap-2 text-primary-foreground">
+                  <span className="flex items-center justify-center gap-2">
                     {downloaded && <BookOpen className="w-4 h-4" />}
-                    {downloading ? `下载中 ${downloadProgress}%` : openingReader ? '打开中' : downloaded ? '阅读' : '下载'}
+                    {openingReader ? '打开中' : downloaded ? '阅读' : onlineFormat ? '在线阅读' : '请先下载'}
                   </span>
                 </button>
+                {!downloaded && (
+                  <button
+                    onClick={() => void handleDownload()}
+                    disabled={downloading || openingReader}
+                    className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-amber-950/10 bg-white/60 text-sm font-semibold text-foreground transition-all duration-200 hover:bg-muted active:scale-[0.98] disabled:opacity-60 md:w-[220px]"
+                  >
+                    <HardDrive className="h-4 w-4" />
+                    {downloading ? `下载中 ${downloadProgress}%` : '下载'}
+                  </button>
+                )}
                 {bookFiles.length > 1 && !downloaded && (
                   <div className="mt-3 w-full md:w-[220px]">
                     <div className="flex flex-wrap gap-1.5">
@@ -775,7 +837,7 @@ function DetailContent() {
             capabilityCheckedAt={capabilities.annotationApiCheckedAt}
             downloaded={downloaded}
             openingReader={openingReader}
-            onLocate={handleOfflineRead}
+            onLocate={handleRead}
             onAuthRequired={handleAnnotationAuthRequired}
           />
         )}

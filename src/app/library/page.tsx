@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Search, ArrowLeft, Loader2 } from 'lucide-react';
 import { useServerStore } from '@/lib/store/server';
 import { DesktopLayout } from '@/components/layout/DesktopLayout';
-import { getErrorMessage, MokeApiError, readApiJson, request } from '@/lib/api';
+import { getErrorMessage, invalidateBookReadCaches, invalidateLibraryReadCaches, MokeApiError, readApiJson, request, requestCachedJson } from '@/lib/api';
 import { cn, resolveServerAssetUrl } from '@/lib/utils';
 import { AuthImage } from '@/components/ui/AuthImage';
 import { BookTable, type BookRow, type SortState } from '@/components/book/BookTable';
@@ -26,6 +26,17 @@ import { useLongPressRegistry } from '@/lib/long-press';
 import { useToast } from '@/lib/toast';
 import { BookOpen, Check, Download, ListChecks, X } from 'lucide-react';
 import { BookCoverFallback } from '@/components/book/BookCoverFallback';
+import {
+  buildLibraryRequestParams,
+  hasMoreLibraryBooks,
+  isLibraryScrollNearEnd,
+  isScrollableLibraryElement,
+  LIBRARY_BATCH_SIZE,
+  mergeUniqueLibraryBooks,
+  sortLibraryBooksById,
+  type LibraryBrowseMode,
+  type LibrarySortOrder,
+} from '@/lib/library-browse';
 
 interface BookItem {
   id: string | number;
@@ -88,6 +99,10 @@ export default function LibraryPage() {
   const [activeTab, setActiveTab] = useState<'local' | 'online'>('local');
   const viewMode = useViewPrefsStore((s) => s.libraryViewMode);
   const setViewMode = useViewPrefsStore((s) => s.setLibraryViewMode);
+  const libraryBrowseMode = useViewPrefsStore((s) => s.libraryBrowseMode);
+  const setLibraryBrowseMode = useViewPrefsStore((s) => s.setLibraryBrowseMode);
+  const librarySortOrder = useViewPrefsStore((s) => s.librarySortOrder);
+  const setLibrarySortOrder = useViewPrefsStore((s) => s.setLibrarySortOrder);
   const [searchQ, setSearchQ] = useState('');
   const toast = useToast((s) => s.show);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -125,7 +140,16 @@ export default function LibraryPage() {
   const [tagOptions, setTagOptions] = useState<string[]>(['全部']);
   const [currentPage, setCurrentPage] = useState(1);
   const [total, setTotal] = useState(0);
-  const pageSize = 30;
+  const [nextOffset, setNextOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [localAppending, setLocalAppending] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const localScrollRef = useRef<HTMLDivElement>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
+  const localRequestAbortRef = useRef<AbortController | null>(null);
+  const localRequestInFlightRef = useRef(false);
+  const lastLocalQueryKeyRef = useRef<string | null>(null);
+  const pageSize = LIBRARY_BATCH_SIZE;
 
   // Online tab state
   const [networkSources, setNetworkSources] = useState<NetworkSource[]>([]);
@@ -160,18 +184,15 @@ export default function LibraryPage() {
   }, []);
 
   // ── Local tab effects ────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (activeTab === 'local') loadBooks(currentPage);
-  }, [serverUrl, offlineMode, activeTab, currentPage, selectedFormat, selectedTag]);
-
-  useEffect(() => {
-    if (!serverUrl) return;
-    loadTags();
-  }, [serverUrl, offlineMode]);
-
-  const loadBooks = async (page: number) => {
+  const loadBooks = useCallback(async (offset: number, append: boolean) => {
+    if (localRequestInFlightRef.current) return;
     const seq = ++booksSeqRef.current;
-    setLocalLoading(true);
+    const controller = new AbortController();
+    localRequestAbortRef.current = controller;
+    localRequestInFlightRef.current = true;
+    setLoadMoreError(null);
+    if (append) setLocalAppending(true);
+    else setLocalLoading(true);
     try {
       if (offlineMode) {
         const records = await listOfflineBooks(serverUrl || undefined);
@@ -179,30 +200,166 @@ export default function LibraryPage() {
         const filtered = selectedFormat === '全部'
           ? localBooks
           : localBooks.filter((book) => book.files?.[0]?.format.toLowerCase() === selectedFormat.toLowerCase());
+        const sorted = sortLibraryBooksById(filtered, librarySortOrder);
+        const batch = sorted.slice(offset, offset + pageSize);
         if (seq !== booksSeqRef.current) return;
-        setBooks(filtered.slice((page - 1) * pageSize, page * pageSize));
-        setTotal(filtered.length);
+        setBooks((current) => append ? mergeUniqueLibraryBooks(current, batch) : batch);
+        setTotal(sorted.length);
+        setNextOffset(offset + batch.length);
+        setHasMore(hasMoreLibraryBooks(offset, batch.length, sorted.length));
         return;
       }
-      const params = new URLSearchParams({
-        start: String((page - 1) * pageSize),
-        size: String(pageSize),
+      const params = buildLibraryRequestParams({
+        offset,
+        order: librarySortOrder,
+        format: selectedFormat,
+        tag: selectedTag,
       });
-      if (selectedTag !== '全部') params.set('tag', selectedTag);
-      if (selectedFormat !== '全部') params.set('format', selectedFormat.toLowerCase());
-      const res = await request(`${serverUrl}/api/library?${params.toString()}`, { credentials: 'include' });
+      const res = await requestCachedJson(
+        serverUrl + '/api/library?' + params.toString(),
+        { credentials: 'include', signal: controller.signal },
+        5 * 60 * 1000,
+      );
       const data = await readApiJson<{ err?: string; msg?: string; books?: BookItem[]; items?: BookItem[]; total?: number }>(res, '书库列表解析失败。', ['ok', 'user.need_login']);
       if (seq !== booksSeqRef.current) return;
       if (data.err === 'user.need_login') { router.push('/login'); return; }
-      setBooks(data.books || data.items || []);
-      setTotal(data.total || 0);
+      const incoming = data.books || data.items || [];
+      const responseTotal = data.total || 0;
+      setBooks((current) => append ? mergeUniqueLibraryBooks(current, incoming) : incoming);
+      setTotal(responseTotal);
+      setNextOffset(offset + incoming.length);
+      setHasMore(hasMoreLibraryBooks(offset, incoming.length, responseTotal));
     } catch (error) {
       if (seq !== booksSeqRef.current) return;
-      setBooks([]);
-      setTotal(0);
-      toast(getErrorMessage(error, '书库加载失败，请检查服务器连接。'));
-    } finally { if (seq === booksSeqRef.current) setLocalLoading(false); }
-  };
+      if (controller.signal.aborted || /abort|cancel/i.test(error instanceof Error ? error.message : String(error))) return;
+      const message = getErrorMessage(error, append ? '继续加载失败，请重试。' : '书库加载失败，请检查服务器连接。');
+      if (append) {
+        setLoadMoreError(message);
+      } else {
+        setBooks([]);
+        setTotal(0);
+        setNextOffset(0);
+        setHasMore(false);
+        toast(message);
+      }
+    } finally {
+      if (localRequestAbortRef.current === controller) {
+        localRequestAbortRef.current = null;
+        localRequestInFlightRef.current = false;
+      }
+      if (seq === booksSeqRef.current) {
+        setLocalLoading(false);
+        setLocalAppending(false);
+      }
+    }
+  }, [librarySortOrder, offlineMode, pageSize, router, selectedFormat, selectedTag, serverUrl, toast]);
+
+  const localQueryKey = JSON.stringify([
+    serverUrl,
+    offlineMode,
+    activeTab,
+    selectedFormat,
+    selectedTag,
+    librarySortOrder,
+    libraryBrowseMode,
+  ]);
+
+  useEffect(() => {
+    if (activeTab !== 'local') return;
+    const queryChanged = lastLocalQueryKeyRef.current !== localQueryKey;
+    lastLocalQueryKeyRef.current = localQueryKey;
+    if (queryChanged && currentPage !== 1) {
+      setCurrentPage(1);
+      return;
+    }
+
+    booksSeqRef.current += 1;
+    localRequestAbortRef.current?.abort();
+    localRequestAbortRef.current = null;
+    localRequestInFlightRef.current = false;
+    setBooks([]);
+    setTotal(0);
+    setNextOffset(0);
+    setHasMore(false);
+    setLoadMoreError(null);
+    setSelectedIds(new Set());
+    setBatchMode(false);
+    lastSelectedIdRef.current = null;
+    localScrollRef.current?.scrollTo({ top: 0 });
+    window.scrollTo({ top: 0 });
+    const offset = libraryBrowseMode === 'paged' ? (currentPage - 1) * pageSize : 0;
+    void loadBooks(offset, false);
+
+    return () => {
+      booksSeqRef.current += 1;
+      localRequestAbortRef.current?.abort();
+      localRequestAbortRef.current = null;
+      localRequestInFlightRef.current = false;
+    };
+  }, [activeTab, currentPage, libraryBrowseMode, loadBooks, localQueryKey, pageSize]);
+
+  useEffect(() => {
+    if (
+      activeTab !== 'local'
+      || libraryBrowseMode !== 'continuous'
+      || localLoading
+      || localAppending
+      || loadMoreError
+      || !hasMore
+    ) return;
+    const root = localScrollRef.current;
+    const target = loadMoreSentinelRef.current;
+    if (!root || !target) return;
+    const useElementScroll = isScrollableLibraryElement(root);
+    const scrollTarget: HTMLDivElement | Window = useElementScroll ? root : window;
+    const getScrollMetrics = () => {
+      if (useElementScroll) return root;
+      const scrollingElement = document.scrollingElement ?? document.documentElement;
+      return {
+        scrollHeight: scrollingElement.scrollHeight,
+        scrollTop: window.scrollY || scrollingElement.scrollTop,
+        clientHeight: window.innerHeight,
+      };
+    };
+    let previousScrollTop = getScrollMetrics().scrollTop;
+    let scrolledDown = false;
+    let requested = false;
+
+    const maybeLoadNextBatch = () => {
+      if (
+        requested
+        || !scrolledDown
+        || !isLibraryScrollNearEnd(getScrollMetrics(), 320)
+      ) return;
+      requested = true;
+      void loadBooks(nextOffset, true);
+    };
+
+    const handleScroll = () => {
+      const nextScrollTop = getScrollMetrics().scrollTop;
+      if (nextScrollTop > previousScrollTop) scrolledDown = true;
+      previousScrollTop = nextScrollTop;
+      maybeLoadNextBatch();
+    };
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) maybeLoadNextBatch();
+      },
+      { root: useElementScroll ? root : null, rootMargin: '0px 0px 320px 0px', threshold: 0.01 },
+    );
+    scrollTarget.addEventListener('scroll', handleScroll, { passive: true });
+    observer.observe(target);
+    return () => {
+      scrollTarget.removeEventListener('scroll', handleScroll);
+      observer.disconnect();
+    };
+  }, [activeTab, hasMore, libraryBrowseMode, loadBooks, loadMoreError, localAppending, localLoading, nextOffset]);
+
+  useEffect(() => {
+    if (!serverUrl) return;
+    loadTags();
+  }, [serverUrl, offlineMode]);
 
   const loadTags = async () => {
     if (offlineMode) {
@@ -423,7 +580,10 @@ export default function LibraryPage() {
         body: JSON.stringify({ shelf: true }),
       });
       const data = await res.json();
-      if (data.err === 'ok') toast(`《${book.title}》已加入书架`);
+      if (data.err === 'ok') {
+        await invalidateBookReadCaches(serverUrl, id);
+        toast(`《${book.title}》已加入书架`);
+      }
       else toast(data.msg || '加入失败');
     } catch {
       toast('加入失败，请检查网络');
@@ -441,7 +601,10 @@ export default function LibraryPage() {
         body: JSON.stringify({ shelf: false }),
       });
       const data = await res.json();
-      if (data.err === 'ok') toast(`《${book.title}》已移出书架`);
+      if (data.err === 'ok') {
+        await invalidateBookReadCaches(serverUrl, id);
+        toast(`《${book.title}》已移出书架`);
+      }
       else toast(data.msg || '移出失败');
     } catch {
       toast('移出失败，请检查网络');
@@ -537,6 +700,7 @@ export default function LibraryPage() {
       });
       if (controller.signal.aborted) return;
       if (result.status === 'completed') {
+        await invalidateLibraryReadCaches(serverUrl);
         toast(`《${title}》已保存到书库`);
       } else if (result.status === 'failed') {
         toast(`《${title}》保存失败：${result.error || '未知错误'}`);
@@ -620,6 +784,11 @@ export default function LibraryPage() {
         if (r.status === 'fulfilled' && r.value?.err === 'ok') ok++;
         else fail++;
       }
+      const succeededIds = ids.filter((_, index) => {
+        const result = results[index];
+        return result.status === 'fulfilled' && result.value?.err === 'ok';
+      });
+      await Promise.all(succeededIds.map((id) => invalidateBookReadCaches(serverUrl, id)));
       exitBatchMode();
       if (ok > 0) toast(`已加入 ${ok} 本到书架`);
       if (fail > 0) toast(`${fail} 本加入失败`);
@@ -673,6 +842,16 @@ export default function LibraryPage() {
     setCurrentPage(1);
     if (type === 'format') setSelectedFormat(value);
     if (type === 'tag') setSelectedTag(value);
+  };
+
+  const updateLibrarySortOrder = (value: string) => {
+    setCurrentPage(1);
+    setLibrarySortOrder(value as LibrarySortOrder);
+  };
+
+  const updateLibraryBrowseMode = (value: LibraryBrowseMode) => {
+    setCurrentPage(1);
+    setLibraryBrowseMode(value);
   };
 
   // ── Render helpers ───────────────────────────────────────────────────────────
@@ -753,13 +932,48 @@ export default function LibraryPage() {
       {activeTab === 'local' ? (
         <>
           <div className="shrink-0 border-b border-amber-950/10 bg-white/25 px-4 py-3 sm:px-6 md:px-8 md:py-4">
-            <div className="flex items-center gap-4 overflow-x-auto rounded-3xl app-card px-4 py-3 md:gap-6">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-3 rounded-2xl app-card px-4 py-3 sm:flex-nowrap sm:overflow-x-auto sm:rounded-3xl md:gap-6">
               <FilterSelect label="格式" value={selectedFormat} options={['全部', 'EPUB', 'PDF', 'MOBI', 'TXT', 'AZW3']} onChange={(v) => updateFilter('format', v)} />
               <TagFilterSelect value={selectedTag} options={tagOptions} onChange={(v) => updateFilter('tag', v)} />
+              <div className="flex items-center gap-1.5">
+                <span className="shrink-0 text-xs text-muted-foreground">排序</span>
+                <Select
+                  value={librarySortOrder}
+                  onChange={updateLibrarySortOrder}
+                  minPanelWidth={168}
+                  aria-label={`入库顺序：${librarySortOrder === 'asc' ? '正序（最早入库）' : '倒序（最新入库）'}`}
+                  className="focus-visible:ring-2 focus-visible:ring-foreground focus-visible:ring-offset-2"
+                  options={[
+                    { value: 'desc', label: '倒序（最新入库）' },
+                    { value: 'asc', label: '正序（最早入库）' },
+                  ]}
+                />
+              </div>
+              <div role="group" aria-label="书库浏览方式" className="flex shrink-0 items-center rounded-lg border border-amber-950/10 bg-white/65 p-1 shadow-sm">
+                {([
+                  ['continuous', '连续滚动'],
+                  ['paged', '分页'],
+                ] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={libraryBrowseMode === mode}
+                    onClick={() => updateLibraryBrowseMode(mode)}
+                    className={cn(
+                      'h-7 whitespace-nowrap rounded-md px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground focus-visible:ring-offset-2',
+                      libraryBrowseMode === mode
+                        ? 'bg-background font-medium text-foreground shadow-sm eink:!bg-black eink:!text-white'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground eink:!bg-white eink:!text-black',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-auto px-4 py-5 sm:px-6 md:px-8 md:py-8">
+          <div ref={localScrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-5 sm:px-6 md:px-8 md:py-8">
             {localLoading ? (
               <div className="flex items-center justify-center h-64">
                 <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-primary" />
@@ -771,13 +985,16 @@ export default function LibraryPage() {
               </div>
             ) : viewMode === 'rows' ? (
               <BookTable
+                key={libraryBrowseMode + '-' + librarySortOrder}
                 books={books as BookRow[]}
                 batchMode={batchMode}
                 selectedIds={selectedIds}
                 onToggleSelect={toggleSelect}
                 onContextAction={openContextMenu}
-                paged={totalPages > 1}
-                onSortChange={() => setCurrentPage(1)}
+                paged={libraryBrowseMode === 'paged' && totalPages > 1}
+                onSortChange={() => {
+                  if (libraryBrowseMode === 'paged') setCurrentPage(1);
+                }}
               />
             ) : (
               <div className={cn('rounded-[24px] app-card p-2 sm:rounded-[30px] sm:p-4', viewMode === 'grid' ? 'grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 sm:gap-x-4 sm:gap-y-7 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6' : 'grid grid-cols-1 gap-1 lg:grid-cols-2 lg:gap-4')}>
@@ -864,9 +1081,34 @@ export default function LibraryPage() {
                 })}
               </div>
             )}
+            {libraryBrowseMode === 'continuous' && books.length > 0 && (
+              <div ref={loadMoreSentinelRef} className="flex min-h-16 items-center justify-center pt-5 text-sm tabular-nums text-muted-foreground" aria-live="polite">
+                {localAppending ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    已加载 {books.length} / {total}
+                  </span>
+                ) : loadMoreError ? (
+                  <div className="flex max-w-full flex-wrap items-center justify-center gap-2 text-center">
+                    <span>{loadMoreError}</span>
+                    <button
+                      type="button"
+                      onClick={() => void loadBooks(nextOffset, true)}
+                      className="rounded-md border border-border bg-background px-3 py-1.5 text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground focus-visible:ring-offset-2"
+                    >
+                      重试加载
+                    </button>
+                  </div>
+                ) : hasMore ? (
+                  <span>已加载 {books.length} / {total}</span>
+                ) : (
+                  <span>已加载全部，共 {books.length} 本</span>
+                )}
+              </div>
+            )}
           </div>
 
-          {totalPages > 1 && (
+          {libraryBrowseMode === 'paged' && totalPages > 1 && (
             <div className="flex shrink-0 items-center justify-center gap-1.5 overflow-x-auto border-t border-amber-950/10 bg-white/35 px-4 py-4 backdrop-blur-sm sm:px-8 md:py-5">
               <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}
                 className="flex items-center justify-center h-8 px-3 text-sm rounded-sm transition-colors text-muted-foreground hover:bg-muted disabled:opacity-50 disabled:hover:bg-transparent">上一页</button>

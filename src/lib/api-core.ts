@@ -34,6 +34,11 @@ export function isAbsoluteHttpUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
 
+export function isTauriIpcAvailable(internals: unknown): boolean {
+  if (!internals || typeof internals !== 'object') return false;
+  return typeof (internals as { invoke?: unknown }).invoke === 'function';
+}
+
 export function buildTauriRequestInit(options?: RequestInit): TauriRequestInit {
   const init = { ...(options ?? {}) } as TauriRequestInit;
   init.maxRedirections = 5;

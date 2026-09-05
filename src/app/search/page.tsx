@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
 import { DesktopLayout } from '@/components/layout/DesktopLayout';
-import { getErrorMessage, MokeApiError, readApiJson, request } from '@/lib/api';
+import { getErrorMessage, invalidateBookReadCaches, MokeApiError, readApiJson, request, requestCachedJson } from '@/lib/api';
 import { cn, resolveServerAssetUrl } from '@/lib/utils';
 import { AuthImage } from '@/components/ui/AuthImage';
 import { BookTable, type BookRow } from '@/components/book/BookTable';
@@ -103,11 +103,12 @@ function SearchContent() {
           .filter((record) => `${record.title} ${record.author || ''}`.toLocaleLowerCase('zh-CN').includes(normalized)));
         return;
       }
-      const res = await request(
+      const res = await requestCachedJson(
         isShelfScope
           ? `${serverUrl}/api/shelf`
           : `${serverUrl}/api/search?name=${encodeURIComponent(term)}`,
         { credentials: 'include' },
+        5 * 60 * 1000,
       );
       const data = await readApiJson<{ err?: string; msg?: string; books?: BookItem[]; items?: BookItem[] }>(res, '搜索结果解析失败。', ['ok', 'user.need_login']);
       if (data.err === 'user.need_login') {
@@ -203,6 +204,7 @@ function SearchContent() {
         return;
       }
       if (data.err === 'ok') {
+        await invalidateBookReadCaches(serverUrl, id);
         setResults((prev) => prev.map((b) =>
           String(b.id) === id ? { ...b, state: { ...(b as any).state, wants: inShelf } } : b,
         ));
@@ -314,6 +316,7 @@ function SearchContent() {
         else fail++;
       }
       if (succeeded.length > 0) {
+        await Promise.all(succeeded.map((id) => invalidateBookReadCaches(serverUrl, id)));
         const done = new Set(succeeded);
         setResults((prev) => prev.map((b) =>
           done.has(String(b.id)) ? { ...b, state: { ...(b as any).state, wants: true } } : b,

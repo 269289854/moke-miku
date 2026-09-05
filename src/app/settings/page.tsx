@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, BookOpen, Copy, Download, FolderOpen, LogOut, Moon, Package, Palette, PlugZap, RefreshCw, Settings2, ShieldAlert, ShieldCheck, Sun, User, Code2, MonitorCog } from 'lucide-react';
+import { ArrowRight, BookOpen, Copy, Database, Download, Eraser, FolderOpen, HardDrive, LogOut, Moon, Package, Palette, PlugZap, RefreshCw, Settings2, ShieldAlert, ShieldCheck, Sun, Trash2, User, Code2, MonitorCog } from 'lucide-react';
 import { DesktopLayout } from '@/components/layout/DesktopLayout';
 import { fetchServerInfo, request } from '@/lib/api';
 import { useServerStore } from '@/lib/store/server';
@@ -14,9 +14,30 @@ import { cn } from '@/lib/utils';
 import { useUpdateStore } from '@/lib/store/update';
 import { APP_VERSION } from '@/lib/app-version';
 import { getMokeRuntimePlatform } from '@/lib/moke-reader';
+import { buildMokeAccountCacheScope } from '@/lib/moke-book-source';
 import { safeRemoveLocalStorageItem } from '@/lib/browser-storage';
 import { useToast } from '@/lib/toast';
 import { Select } from '@/components/ui/Select';
+import {
+  clearCurrentAccountMokeCache,
+  clearMokeCache,
+  getMokeCacheStats,
+  type MokeCacheStats,
+} from '@/lib/moke-cache';
+
+interface ReaderCacheStats {
+  bytes: number;
+  entries: number;
+}
+
+const EMPTY_PAGE_CACHE_STATS: MokeCacheStats = {
+  apiBytes: 0,
+  imageBytes: 0,
+  totalBytes: 0,
+  entries: 0,
+};
+
+const EMPTY_READER_CACHE_STATS: ReaderCacheStats = { bytes: 0, entries: 0 };
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -30,6 +51,22 @@ export default function SettingsPage() {
   const [directorySupported, setDirectorySupported] = useState<boolean | null>(null);
   const showToast = useToast((s) => s.show);
   const [serverVersion, setServerVersion] = useState('获取中...');
+  const [pageCacheStats, setPageCacheStats] = useState<MokeCacheStats>(EMPTY_PAGE_CACHE_STATS);
+  const [readerCacheStats, setReaderCacheStats] = useState<ReaderCacheStats>(EMPTY_READER_CACHE_STATS);
+  const [cacheBusy, setCacheBusy] = useState<'reader' | 'page' | 'all' | null>(null);
+  const [showClearAllConfirm, setShowClearAllConfirm] = useState(false);
+
+  const refreshCacheStats = useCallback(async () => {
+    const pageStatsPromise = getMokeCacheStats();
+    const readerStatsPromise = process.env.NEXT_PUBLIC_APP_PLATFORM === 'tauri'
+      ? import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke<ReaderCacheStats>('moke_get_reader_cache_stats'))
+        .catch(() => EMPTY_READER_CACHE_STATS)
+      : Promise.resolve(EMPTY_READER_CACHE_STATS);
+    const [pageStats, readerStats] = await Promise.all([pageStatsPromise, readerStatsPromise]);
+    setPageCacheStats(pageStats);
+    setReaderCacheStats(readerStats);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,7 +109,30 @@ export default function SettingsPage() {
     };
   }, [offlineMode, serverUrl]);
 
-  const handleDisconnect = () => {
+  useEffect(() => {
+    void refreshCacheStats();
+  }, [refreshCacheStats]);
+
+  const clearCurrentAccountCaches = async () => {
+    const tasks: Promise<unknown>[] = [clearCurrentAccountMokeCache()];
+    if (process.env.NEXT_PUBLIC_APP_PLATFORM === 'tauri' && serverUrl) {
+      const account = String(user?.id || user?.username || user?.name || 'anonymous');
+      const scope = buildMokeAccountCacheScope({ serverUrl, account });
+      tasks.push(
+        import('@tauri-apps/api/core')
+          .then(({ invoke }) => invoke('moke_clear_reader_cache', { scope })),
+      );
+    }
+    const results = await Promise.allSettled(tasks);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.warn('Failed to clear current account cache:', result.reason);
+      }
+    }
+  };
+
+  const handleDisconnect = async () => {
+    await clearCurrentAccountCaches();
     disconnect();
     safeRemoveLocalStorageItem('moke-auth-token');
     router.push('/welcome');
@@ -91,9 +151,61 @@ export default function SettingsPage() {
         console.warn('Failed to sign out on server:', error);
       }
     }
+    await clearCurrentAccountCaches();
     logout();
     safeRemoveLocalStorageItem('moke-auth-token');
     router.push('/login');
+  };
+
+  const handleClearReaderCache = async () => {
+    if (process.env.NEXT_PUBLIC_APP_PLATFORM !== 'tauri' || cacheBusy) return;
+    setCacheBusy('reader');
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('moke_clear_reader_cache');
+      await refreshCacheStats();
+      showToast('在线阅读缓存已清理');
+    } catch (error) {
+      console.error('Failed to clear reader cache:', error);
+      showToast('在线阅读缓存清理失败', 'error');
+    } finally {
+      setCacheBusy(null);
+    }
+  };
+
+  const handleClearPageCache = async () => {
+    if (cacheBusy) return;
+    setCacheBusy('page');
+    try {
+      await clearMokeCache();
+      await refreshCacheStats();
+      showToast('图片与页面缓存已清理');
+    } catch (error) {
+      console.error('Failed to clear page cache:', error);
+      showToast('图片与页面缓存清理失败', 'error');
+    } finally {
+      setCacheBusy(null);
+    }
+  };
+
+  const handleClearAllCache = async () => {
+    if (cacheBusy) return;
+    setCacheBusy('all');
+    try {
+      await clearMokeCache();
+      if (process.env.NEXT_PUBLIC_APP_PLATFORM === 'tauri') {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('moke_clear_reader_cache');
+      }
+      await refreshCacheStats();
+      setShowClearAllConfirm(false);
+      showToast('缓存已全部清理');
+    } catch (error) {
+      console.error('Failed to clear all caches:', error);
+      showToast('全部缓存清理失败', 'error');
+    } finally {
+      setCacheBusy(null);
+    }
   };
 
   const handleSelectDownloadDirectory = async () => {
@@ -169,11 +281,54 @@ export default function SettingsPage() {
                 icon={PlugZap}
                 label="断开连接"
                 tone="danger"
-                onClick={handleDisconnect}
+                onClick={() => void handleDisconnect()}
               />
               </>
             )}
           </SettingsSection>
+
+          {process.env.NEXT_PUBLIC_APP_PLATFORM === 'tauri' && (
+            <SettingsSection title="存储与缓存" description="减少重复网络请求，并管理在线阅读占用的本地空间">
+              <CacheUsageRow
+                icon={BookOpen}
+                label="在线阅读缓存"
+                value={formatStorageSize(readerCacheStats.bytes)}
+                description={`${readerCacheStats.entries} 个缓存文件，阅读时按需重新获取`}
+              />
+              <CacheUsageRow
+                icon={Database}
+                label="图片与页面缓存"
+                value={formatStorageSize(pageCacheStats.totalBytes)}
+                description={`页面 ${formatStorageSize(pageCacheStats.apiBytes)} · 图片 ${formatStorageSize(pageCacheStats.imageBytes)}`}
+              />
+              <SettingsRow
+                label="缓存总占用"
+                value={formatStorageSize(readerCacheStats.bytes + pageCacheStats.totalBytes)}
+              />
+              <ActionRow
+                icon={HardDrive}
+                label={cacheBusy === 'reader' ? '正在清理在线阅读缓存' : '清理在线阅读缓存'}
+                disabled={cacheBusy !== null}
+                onClick={() => void handleClearReaderCache()}
+              />
+              <ActionRow
+                icon={Eraser}
+                label={cacheBusy === 'page' ? '正在清理图片与页面缓存' : '清理图片与页面缓存'}
+                disabled={cacheBusy !== null}
+                onClick={() => void handleClearPageCache()}
+              />
+              <ActionRow
+                icon={Trash2}
+                label="清理全部缓存"
+                tone="danger"
+                disabled={cacheBusy !== null}
+                onClick={() => setShowClearAllConfirm(true)}
+              />
+              <p className="px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+                清理缓存不会删除已下载书籍、笔记、设置或阅读进度。正在阅读的书会在需要时重新获取内容。
+              </p>
+            </SettingsSection>
+          )}
 
           <SettingsSection title="离线书库" description="进入离线模式并管理本地书籍与存储位置">
             {!offlineMode && <ActionRow
@@ -255,6 +410,47 @@ export default function SettingsPage() {
         </div>
         </div>
       </div>
+
+      {showClearAllConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" role="presentation">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="clear-cache-title"
+            className="w-full max-w-sm rounded-3xl border border-border bg-card p-6 shadow-xl"
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-destructive/10 text-destructive">
+                <Eraser className="h-5 w-5" />
+              </div>
+              <div>
+                <h2 id="clear-cache-title" className="text-base font-semibold text-foreground">确认清理全部缓存？</h2>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  在线阅读内容以及图片和页面缓存会被删除，之后阅读或浏览时会重新从服务器获取。下载书籍、笔记、设置和阅读进度不会受影响。
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowClearAllConfirm(false)}
+                disabled={cacheBusy !== null}
+                className="h-10 flex-1 rounded-xl border border-amber-950/10 bg-white/60 text-sm font-medium text-foreground transition hover:bg-muted disabled:opacity-60"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleClearAllCache()}
+                disabled={cacheBusy !== null}
+                className="h-10 flex-1 rounded-xl bg-destructive text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:opacity-60"
+              >
+                {cacheBusy === 'all' ? '清理中' : '确认清理'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DesktopLayout>
   );
 }
@@ -276,6 +472,28 @@ function SettingsRow({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between gap-4 px-4 py-3.5 rounded-3xl transition-colors hover:bg-muted/60">
       <span className="text-sm font-medium text-foreground shrink-0">{label}</span>
       <span className="text-sm text-muted-foreground truncate text-right">{value}</span>
+    </div>
+  );
+}
+
+function CacheUsageRow({ icon: Icon, label, value, description }: {
+  icon: typeof User;
+  label: string;
+  value: string;
+  description: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-4 py-3.5 rounded-3xl transition-colors hover:bg-muted/60">
+      <div className="flex min-w-0 items-start gap-3.5">
+        <div className="shrink-0 rounded-lg border border-amber-950/10 bg-white/60 p-2 text-muted-foreground eink-bordered">
+          <Icon className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 py-0.5">
+          <p className="text-sm font-medium text-foreground">{label}</p>
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{description}</p>
+        </div>
+      </div>
+      <span className="shrink-0 text-sm font-medium text-foreground">{value}</span>
     </div>
   );
 }
@@ -330,11 +548,19 @@ function SettingsLinkRow({ icon: Icon, label, description, href, disabled }: { i
   return <Link href={href} className="block rounded-3xl">{content}</Link>;
 }
 
-function ActionRow({ icon: Icon, label, tone = 'default', onClick }: { icon: typeof User; label: string; tone?: 'default' | 'danger'; onClick: () => void }) {
+function ActionRow({ icon: Icon, label, tone = 'default', disabled = false, onClick }: {
+  icon: typeof User;
+  label: string;
+  tone?: 'default' | 'danger';
+  disabled?: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={`w-full flex items-center justify-between px-4 py-3 rounded-3xl text-left transition-all duration-200 active:scale-[0.99] group ${tone === 'danger' ? 'hover:bg-destructive/5' : 'hover:bg-muted/80'}`}
+      disabled={disabled}
+      className={`w-full flex items-center justify-between px-4 py-3 rounded-3xl text-left transition-all duration-200 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 group ${tone === 'danger' ? 'hover:bg-destructive/5' : 'hover:bg-muted/80'}`}
     >
       <div className="flex items-center gap-3.5 min-w-0">
         <div className={`p-2 rounded-lg bg-white/60 border border-amber-950/10 eink-bordered shrink-0 transition-colors duration-200 ${tone === 'danger' ? 'group-hover:border-destructive/20 group-hover:text-destructive' : 'group-hover:text-primary'}`}>
@@ -345,6 +571,14 @@ function ActionRow({ icon: Icon, label, tone = 'default', onClick }: { icon: typ
       <ArrowRight className={`w-4 h-4 opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all duration-200 shrink-0 ${tone === 'danger' ? 'text-destructive' : 'text-muted-foreground'}`} />
     </button>
   );
+}
+
+function formatStorageSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** unitIndex;
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
 function ThemeRow({ value, onChange, disabled }: { value: ThemeMode; onChange: (v: ThemeMode) => void; disabled?: boolean }) {

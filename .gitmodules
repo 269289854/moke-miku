@@ -1,9 +1,9 @@
 [submodule "readest"]
 	path = readest
-	url = https://github.com/hehetoshang/readest-reader.git
+	url = https://github.com/269289854/readest-reader.git
 [submodule "tauri"]
 	path = vendor/tauri
-	url = https://github.com/hehetoshang/tauri.git
+	url = https://github.com/269289854/tauri.git
 	branch = dev
 [submodule "vendor/foliate-js"]
 	path = vendor/foliate-js

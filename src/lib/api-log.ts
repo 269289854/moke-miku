@@ -15,6 +15,7 @@ const SAFE_ERROR_CODES = new Set([
   'server.invalid',
   'server.invalid_response',
   'server.response_read_failed',
+  'tauri.ipc.unavailable',
   'user.need_login',
   'user.private.not_valid',
 ]);

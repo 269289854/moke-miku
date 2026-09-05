@@ -10,6 +10,8 @@ import {
   isSingleWebviewRuntime,
   openEmbeddedReaderBook,
 } from '@/lib/moke-reader';
+import { useServerStore } from '@/lib/store/server';
+import { buildMokeSourceIdentity, readerCacheLimitForPlatform } from '@/lib/moke-book-source';
 
 export async function openOfflineBook(
   record: OfflineBookRecord,
@@ -32,8 +34,28 @@ export async function openOfflineBook(
     fetchReadingProgress(record.bookId),
     getMokeRuntimePlatform(),
   ]);
+  const currentUser = useServerStore.getState().user;
+  const identity = buildMokeSourceIdentity({
+    serverUrl: record.serverUrl,
+    account: record.accountKey
+      || String(currentUser?.id || currentUser?.username || currentUser?.name || 'anonymous'),
+    bookId: record.bookId,
+    format: record.format,
+  });
+  const source = {
+    kind: 'local' as const,
+    bookId: record.bookId,
+    format: record.format,
+    title: record.title,
+    author: record.author || '',
+    filePath: record.filePath,
+    fileVersion: record.sourceSignature || `${record.updatedAt}:${record.size}`,
+    cacheLimitBytes: readerCacheLimitForPlatform(platform),
+    ...identity,
+  };
   const common = {
     filePath: record.filePath,
+    mokeSource: source,
     eink: useSettingsStore.getState().eink,
     debugPanel: getDebugPanelLaunchState(),
     mokeBookId: record.bookId,
@@ -42,7 +64,7 @@ export async function openOfflineBook(
 
   if (isSingleWebviewRuntime(platform)) {
     await openEmbeddedReaderBook(
-      buildEmbeddedReaderUrl({ ...common, serverUrl: record.serverUrl }),
+      buildEmbeddedReaderUrl({ ...common, source, serverUrl: record.serverUrl }),
       navigate,
       platform,
     );

@@ -88,26 +88,29 @@ function safeApiErrorCode(value: unknown): string {
     : 'invalid';
 }
 
-/**
- * Notify Talebook through its canonical reader route after the local reader
- * has opened. That route owns both read_history persistence and the book's
- * read counter, so the client must not try to reproduce either mutation.
- */
+/** Persist the reading state without invoking Talebook's download-counting reader route. */
 export async function recordBookRead(
   requestLike: RequestLike,
   serverUrl: string,
   bookId: string | number,
   timeoutMs = READ_RECORD_TIMEOUT_MS,
+  onlineRead = true,
 ): Promise<void> {
-  const readUrl = `${serverUrl}/read/${encodeURIComponent(String(bookId))}`;
+  const readUrl = `${serverUrl.replace(/\/+$/, '')}/api/book/${encodeURIComponent(String(bookId))}/readstate`;
   const expectedTarget = urlTargetOf(readUrl);
   const timeout = buildTimeoutGuard(timeoutMs);
 
   try {
     const response = await Promise.race([
       requestLike(readUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         signal: timeout.signal,
+        body: JSON.stringify({
+          read_state: 1,
+          ...(onlineRead ? { online_read: 1 } : {}),
+        }),
       }),
       timeout.expired,
     ]);
@@ -117,7 +120,7 @@ export async function recordBookRead(
     }
 
     // A 200 from `/`, a login page, or another host means the server followed
-    // a redirect and the record was never persisted. Browser fetch and the
+    // a redirect and the state was never persisted. Browser fetch and the
     // pinned Tauri plugin-http expose the final URL; an empty value is therefore
     // unverifiable and must fail closed instead of bypassing redirect checks.
     const finalTarget = urlTargetOf(response.url);
@@ -129,35 +132,23 @@ export async function recordBookRead(
       throw new Error('book.read_record.redirect');
     }
 
-    // Some Talebook-compatible servers answer this route with an API payload.
-    // In that case HTTP 200 is not enough: only the explicit success contract
-    // may count as a persisted read.
-    if (isJsonResponse(response)) {
-      let body: ArrayBuffer;
-      try {
-        body = await Promise.race([response.arrayBuffer(), timeout.expired]);
-      } catch (error) {
-        if (error instanceof Error && error.message === 'book.read_record.timeout') throw error;
-        throw new Error('book.read_record.response.invalid');
-      }
-      const payload = parseJsonBody(body);
-      const err = payload && typeof payload === 'object' && 'err' in payload
-        ? (payload as { err?: unknown }).err
-        : undefined;
-      if (err !== 'ok') {
-        throw new Error(`book.read_record.api.${safeApiErrorCode(err)}`);
-      }
-      return;
+    if (!isJsonResponse(response)) {
+      throw new Error('book.read_record.response.invalid');
     }
 
-    // Drain successful HTML only to release the native connection. Receiving
-    // the expected response headers already proves the record route completed,
-    // so a slow or failed drain must not turn a persisted record into an error.
+    let body: ArrayBuffer;
     try {
-      await Promise.race([response.arrayBuffer(), timeout.expired]);
-    } catch {
-      // The timeout still aborts/cancels the body resource, but remains a
-      // best-effort cleanup outcome for HTML responses.
+      body = await Promise.race([response.arrayBuffer(), timeout.expired]);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'book.read_record.timeout') throw error;
+      throw new Error('book.read_record.response.invalid');
+    }
+    const payload = parseJsonBody(body);
+    const err = payload && typeof payload === 'object' && 'err' in payload
+      ? (payload as { err?: unknown }).err
+      : undefined;
+    if (err !== 'ok') {
+      throw new Error(`book.read_record.api.${safeApiErrorCode(err)}`);
     }
   } finally {
     timeout.cleanup();
@@ -166,7 +157,7 @@ export async function recordBookRead(
 
 /**
  * Start the independent reader-launch prerequisites together. On mobile the
- * read-history request starts as soon as the local record and runtime are
+ * read-state request starts as soon as the local record and runtime are
  * known, instead of waiting for the unrelated progress fetch. The returned
  * preparation still waits for that best-effort write before a full-document
  * navigation destroys the Moke WebView, but a write failure never blocks the
