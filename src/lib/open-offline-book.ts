@@ -31,7 +31,7 @@ export async function openOfflineBook(
   // be no active authenticated server session, and the saved record can belong
   // to a server other than the currently connected one.
   const [restoreProgress, platform] = await Promise.all([
-    fetchReadingProgress(record.bookId),
+    fetchReadingProgress(record.bookId, { timeoutMs: 2_500 }),
     getMokeRuntimePlatform(),
   ]);
   const currentUser = useServerStore.getState().user;

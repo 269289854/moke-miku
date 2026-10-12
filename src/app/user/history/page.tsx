@@ -213,6 +213,7 @@ export default function UserHistoryPage() {
                   <div className="w-12 h-[72px] rounded-lg overflow-hidden shadow-card shrink-0 flex items-center justify-center bg-muted">
                     {coverUrl ? (
                       <AuthImage
+                        thumb
                         src={coverUrl}
                         alt={item.title}
                         className="w-full h-full object-cover"

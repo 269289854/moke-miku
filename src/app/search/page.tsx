@@ -22,6 +22,9 @@ import { useToast } from '@/lib/toast';
 import { useLongPressRegistry } from '@/lib/long-press';
 import { Check, Download, ListChecks } from 'lucide-react';
 import { BookCoverFallback } from '@/components/book/BookCoverFallback';
+import { readMokeCacheState } from '@/lib/moke-cache';
+import { notifyStaleContent } from '@/lib/stale-notice';
+
 
 interface BookItem {
   id: string | number;
@@ -65,6 +68,13 @@ function SearchContent() {
   const lastSelectedIdRef = useRef<string | null>(null);
   // 请求序号：连续搜索 / URL 参数变化时，慢的旧响应不会覆盖新结果。
   const searchSeqRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      searchSeqRef.current += 1;
+    };
+  }, []);
+
   const { makeHandlers: makeLongPressHandlers } = useLongPressRegistry();
   const filteredResults = useMemo(
     () => results.filter((book) => hasFormat(book, activeFilter)),
@@ -103,31 +113,55 @@ function SearchContent() {
           .filter((record) => `${record.title} ${record.author || ''}`.toLocaleLowerCase('zh-CN').includes(normalized)));
         return;
       }
+
+      const applySearchResponse = async (response: Response) => {
+        const data = await readApiJson<{ err?: string; msg?: string; books?: BookItem[]; items?: BookItem[] }>(
+          response,
+          '搜索结果解析失败。',
+          ['ok', 'user.need_login'],
+        );
+        if (seq !== searchSeqRef.current) return;
+        if (data.err === 'user.need_login') {
+          router.push('/login');
+          return;
+        }
+        if (data.err === 'ok') {
+          const books = data.books || data.items || [];
+          if (isShelfScope) {
+            const normalized = term.toLocaleLowerCase('zh-CN');
+            setResults(books.filter((book) => {
+              const authors = book.author || book.authors?.map((author) => author.name).join('、') || '';
+              return `${book.title} ${authors}`.toLocaleLowerCase('zh-CN').includes(normalized);
+            }));
+          } else {
+            setResults(books);
+          }
+        }
+      };
+
       const res = await requestCachedJson(
         isShelfScope
           ? `${serverUrl}/api/shelf`
           : `${serverUrl}/api/search?name=${encodeURIComponent(term)}`,
         { credentials: 'include' },
         5 * 60 * 1000,
+        undefined,
+        {
+          onBackgroundUpdate: async (bgRes) => {
+            if (seq !== searchSeqRef.current) return;
+            try {
+              await applySearchResponse(bgRes);
+            } catch (error) {
+              console.warn('搜索结果后台刷新失败:', error);
+            }
+          },
+        },
       );
-      const data = await readApiJson<{ err?: string; msg?: string; books?: BookItem[]; items?: BookItem[] }>(res, '搜索结果解析失败。', ['ok', 'user.need_login']);
-      if (data.err === 'user.need_login') {
-        router.push('/login');
-        return;
-      }
       if (seq !== searchSeqRef.current) return;
-      if (data.err === 'ok') {
-        const books = data.books || data.items || [];
-        if (isShelfScope) {
-          const normalized = term.toLocaleLowerCase('zh-CN');
-          setResults(books.filter((book) => {
-            const authors = book.author || book.authors?.map((author) => author.name).join('、') || '';
-            return `${book.title} ${authors}`.toLocaleLowerCase('zh-CN').includes(normalized);
-          }));
-        } else {
-          setResults(books);
-        }
+      if (readMokeCacheState(res) === 'stale') {
+        notifyStaleContent((msg) => toast(msg));
       }
+      await applySearchResponse(res);
     } catch (error) {
       if (seq !== searchSeqRef.current) return;
       setResults([]);
@@ -457,6 +491,7 @@ function SearchContent() {
                         style={{ aspectRatio: '2/3' }}>
                         {coverUrl ? (
                           <AuthImage
+                            thumb
                             src={coverUrl}
                             alt={book.title}
                             className="book-cover-media w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
@@ -495,6 +530,7 @@ function SearchContent() {
                     <div className="book-list-cover-motion h-[72px] w-12 rounded-md overflow-hidden shadow-card shrink-0 flex items-center justify-center relative sm:h-[84px] sm:w-14">
                       {coverUrl ? (
                         <AuthImage
+                          thumb
                           src={coverUrl}
                           alt={book.title}
                           className="w-full h-full object-cover"

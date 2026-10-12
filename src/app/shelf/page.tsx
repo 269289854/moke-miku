@@ -22,6 +22,9 @@ import { useToast } from '@/lib/toast';
 import { useLongPressRegistry } from '@/lib/long-press';
 import { Check, Download, ListChecks } from 'lucide-react';
 import { BookCoverFallback } from '@/components/book/BookCoverFallback';
+import { readMokeCacheState } from '@/lib/moke-cache';
+import { notifyStaleContent } from '@/lib/stale-notice';
+
 
 interface BookItem {
   id: string | number;
@@ -101,6 +104,7 @@ function BookCard({
           style={{ aspectRatio: '2/3' }}>
           {coverUrl ? (
             <AuthImage
+              thumb
               src={coverUrl}
               alt={book.title}
               className="book-cover-media w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
@@ -147,6 +151,7 @@ function BookCard({
       <div className="book-list-cover-motion h-[72px] w-12 rounded-lg overflow-hidden shadow-sm shrink-0 flex items-center justify-center relative transition-transform duration-300 group-hover:scale-[1.03] sm:h-[84px] sm:w-14">
         {coverUrl ? (
           <AuthImage
+            thumb
             src={coverUrl}
             alt={book.title}
             className="w-full h-full object-cover"
@@ -187,6 +192,14 @@ export default function ShelfPage() {
   const [batchMode, setBatchMode] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; bookId: string } | null>(null);
 
+  const loadBooksSeqRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      loadBooksSeqRef.current += 1;
+    };
+  }, []);
+
   // Clear selection whenever the underlying book list changes (server change, reload, etc.)
   useEffect(() => {
     setSelectedIds(new Set());
@@ -198,35 +211,65 @@ export default function ShelfPage() {
   }, [offlineMode, serverUrl]);
 
   const loadBooks = async () => {
+    const seq = ++loadBooksSeqRef.current;
     setLoading(true);
     setRequiresLogin(false);
     try {
       if (offlineMode) {
         const records = await listOfflineBooks(serverUrl || undefined);
+        if (seq !== loadBooksSeqRef.current) return;
         setBooks(buildOfflineLibrary(records.filter((record) => record.inShelf === true)).map((record) => ({
           ...record,
           state: { download: 1 },
         })));
         return;
       }
+
+      const applyShelfResponse = async (res: Response) => {
+        const data = await readApiJson<{ err?: string; msg?: string; books?: BookItem[] }>(
+          res,
+          '书架列表解析失败。',
+          ['ok', 'user.need_login'],
+        );
+        if (seq !== loadBooksSeqRef.current) return;
+        if (data.err === 'user.need_login') {
+          setBooks([]);
+          setRequiresLogin(true);
+          return;
+        }
+        setBooks(data.books || []);
+      };
+
       const res = await requestCachedJson(
         `${serverUrl}/api/shelf`,
         { credentials: 'include' },
         5 * 60 * 1000,
+        undefined,
+        {
+          onBackgroundUpdate: async (bgRes) => {
+            if (seq !== loadBooksSeqRef.current) return;
+            try {
+              await applyShelfResponse(bgRes);
+            } catch (error) {
+              console.warn('书架后台刷新失败:', error);
+            }
+          },
+        },
       );
-      const data = await readApiJson<{ err?: string; msg?: string; books?: BookItem[] }>(res, '书架列表解析失败。', ['ok', 'user.need_login']);
-
-      if (data.err === 'user.need_login') {
-        setBooks([]);
-        setRequiresLogin(true);
-        return;
+      if (seq !== loadBooksSeqRef.current) return;
+      if (readMokeCacheState(res) === 'stale') {
+        notifyStaleContent((msg) => toast(msg));
       }
-
-      setBooks(data.books || []);
+      await applyShelfResponse(res);
     } catch (error) {
+      if (seq !== loadBooksSeqRef.current) return;
       setBooks([]);
       toast(getErrorMessage(error, '书架加载失败，请检查服务器连接。'));
-    } finally { setLoading(false); }
+    } finally {
+      if (seq === loadBooksSeqRef.current) {
+        setLoading(false);
+      }
+    }
   };
 
   // ── Selection ────────────────────────────────────────────────────────────

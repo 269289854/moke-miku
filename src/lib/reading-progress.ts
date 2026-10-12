@@ -65,14 +65,23 @@ export function normalizeReaderProgressEvent(input: Record<string, unknown>): Re
   };
 }
 
-export async function fetchReadingProgress(bookId: string | number): Promise<ReadingProgressPayload | null> {
-  const { serverUrl, capabilities } = useServerStore.getState();
-  if (!serverUrl || capabilities.checkedAt && !capabilities.readingProgressApi) return null;
+export async function fetchReadingProgress(
+  bookId: string | number,
+  options?: { timeoutMs?: number },
+): Promise<ReadingProgressPayload | null> {
+  const { serverUrl, capabilities, offlineMode } = useServerStore.getState();
+  if (offlineMode || !serverUrl || capabilities.checkedAt && !capabilities.readingProgressApi) return null;
+
+  const timeoutMs = options?.timeoutMs ?? 8_000;
 
   try {
-    const response = await request(`${serverUrl}/api/book/${bookId}/progress`, {
-      credentials: 'include',
-    });
+    const response = await request(
+      `${serverUrl}/api/book/${bookId}/progress`,
+      {
+        credentials: 'include',
+      },
+      { timeoutMs },
+    );
     const data = await readApiJson<ReadingProgressResponse>(response);
     const progress = data.progress;
 
@@ -80,7 +89,11 @@ export async function fetchReadingProgress(bookId: string | number): Promise<Rea
     return readingProgressForPersistence(progress as ReadingProgressPayload);
   } catch (error) {
     markProgressUnsupported(error);
-    debugLog('warn', 'reading-progress', `读取阅读进度失败: ${bookId}`, getErrorMessage(error));
+    const isTimeout = error instanceof MokeApiError && error.code === 'network.timeout';
+    const message = isTimeout
+      ? `读取阅读进度超时，先按本地进度打开: ${bookId}`
+      : `读取阅读进度失败: ${bookId}`;
+    debugLog('warn', 'reading-progress', message, getErrorMessage(error));
     return null;
   }
 }

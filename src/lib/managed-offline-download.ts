@@ -5,6 +5,9 @@ import { downloadAndSaveOfflineBook } from '@/lib/offline-download';
 import { removeOfflinePartial } from '@/lib/offline-books';
 import { getOfflineDownloadSnapshot, startOfflineDownload } from '@/lib/offline-download-manager';
 import { useSettingsStore } from '@/lib/store/settings';
+import { runWithDownloadRetry } from '@/lib/download-retry';
+import { getNetworkQuality, waitForNetworkRecovery } from '@/lib/network-health';
+import { debugLog } from '@/lib/debug-log';
 
 export async function startManagedOfflineBookDownload(input: {
   serverUrl: string;
@@ -25,15 +28,39 @@ export async function startManagedOfflineBookDownload(input: {
       format,
       downloadedBytes: canResume ? undefined : 0,
     },
-    run: (onProgress, signal, onTransfer) => downloadAndSaveOfflineBook({
-      ...input,
-      format,
-      onProgress,
-      onTransfer,
-      signal,
-      resume: canResume,
-      preservePartialOnFailure: true,
-    }),
+    run: (onProgress, signal, onTransfer) =>
+      runWithDownloadRetry(
+        () => {
+          const expectedTotalBytes = getOfflineDownloadSnapshot(key)?.totalBytes ?? null;
+          return downloadAndSaveOfflineBook({
+            ...input,
+            format,
+            onProgress,
+            onTransfer,
+            signal,
+            resume: canResume,
+            preservePartialOnFailure: true,
+            expectedTotalBytes,
+          });
+        },
+        {
+          signal,
+          maxAttempts: canResume ? 5 : 2,
+          waitForNetwork: async (retrySignal) => {
+            if (getNetworkQuality() === 'offline') {
+              await waitForNetworkRecovery(retrySignal, 5 * 60 * 1000);
+            }
+          },
+          onRetry: (attemptIndex, error) => {
+            debugLog(
+              'warn',
+              'download',
+              `[${input.title}] 下载中断，准备第 ${attemptIndex + 1} 次重试`,
+              error instanceof Error ? error.message : String(error),
+            );
+          },
+        },
+      ),
     onCancel: () => removeOfflinePartial({
       ...input,
       format,

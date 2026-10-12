@@ -7,9 +7,13 @@ import {
   buildTauriBinaryHeaders,
   buildTauriRequestInit,
   cancelResponseBodyQuietly,
+  createIdleDeadline,
+  createRequestDeadline,
   drainResponseBodyQuietly,
   getErrorMessage,
   isAbsoluteHttpUrl,
+  isGatewayFailureStatus,
+  isRetryableStatus,
   isTauriIpcAvailable,
   readApiJson,
   readJsonResponse,
@@ -219,3 +223,163 @@ test('Web 与 Tauri 平台分支生成不同的安全请求配置', () => {
     acceptInvalidHostnames: true,
   });
 });
+
+test('createRequestDeadline 超时后 signal 中止且 timedOut 为 true', async () => {
+  const deadline = createRequestDeadline(undefined, 20);
+  assert.equal(deadline.signal.aborted, false);
+  assert.equal(deadline.timedOut(), false);
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert.equal(deadline.signal.aborted, true);
+  assert.equal(deadline.timedOut(), true);
+  deadline.clear();
+});
+
+test('createRequestDeadline 调用方中止会传递到合并后的 signal 且 timedOut 为 false', () => {
+  const controller = new AbortController();
+  const deadline = createRequestDeadline(controller.signal, 1000);
+  assert.equal(deadline.signal.aborted, false);
+
+  controller.abort('caller cancel');
+
+  assert.equal(deadline.signal.aborted, true);
+  assert.equal(deadline.timedOut(), false);
+  assert.equal(deadline.signal.reason, 'caller cancel');
+  deadline.clear();
+});
+
+test('createRequestDeadline 调用方信号预先已中止时立即中止', () => {
+  const controller = new AbortController();
+  controller.abort('pre-aborted');
+  const deadline = createRequestDeadline(controller.signal, 1000);
+
+  assert.equal(deadline.signal.aborted, true);
+  assert.equal(deadline.timedOut(), false);
+  assert.equal(deadline.signal.reason, 'pre-aborted');
+  deadline.clear();
+});
+
+test('createRequestDeadline clear 后超时不再触发', async () => {
+  const deadline = createRequestDeadline(undefined, 20);
+  deadline.clear();
+  deadline.clear();
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert.equal(deadline.signal.aborted, false);
+  assert.equal(deadline.timedOut(), false);
+});
+
+test('createRequestDeadline timeoutMs 为 0 或 Infinity 时不设定时器', async () => {
+  const deadlineZero = createRequestDeadline(undefined, 0);
+  const deadlineInfinity = createRequestDeadline(undefined, Infinity);
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert.equal(deadlineZero.signal.aborted, false);
+  assert.equal(deadlineZero.timedOut(), false);
+  assert.equal(deadlineInfinity.signal.aborted, false);
+  assert.equal(deadlineInfinity.timedOut(), false);
+
+  deadlineZero.clear();
+  deadlineInfinity.clear();
+});
+
+test('isGatewayFailureStatus 和 isRetryableStatus 状态码判定边界', () => {
+  const cases = [
+    { status: 200, gateway: false, retryable: false },
+    { status: 404, gateway: false, retryable: false },
+    { status: 416, gateway: false, retryable: false },
+    { status: 500, gateway: false, retryable: true },
+    { status: 502, gateway: true, retryable: true },
+    { status: 519, gateway: false, retryable: false },
+    { status: 520, gateway: true, retryable: true },
+    { status: 527, gateway: true, retryable: true },
+    { status: 528, gateway: false, retryable: false },
+    { status: 530, gateway: true, retryable: true },
+  ];
+
+  for (const { status, gateway, retryable } of cases) {
+    assert.equal(isGatewayFailureStatus(status), gateway, `isGatewayFailureStatus(${status}) 应为 ${gateway}`);
+    assert.equal(isRetryableStatus(status), retryable, `isRetryableStatus(${status}) 应为 ${retryable}`);
+  }
+
+  assert.equal(isRetryableStatus(408), true);
+  assert.equal(isRetryableStatus(425), true);
+  assert.equal(isRetryableStatus(429), true);
+  assert.equal(isRetryableStatus(503), true);
+  assert.equal(isRetryableStatus(504), true);
+});
+
+test('createIdleDeadline 持续 touch 时不超时，停止 touch 后超时', async () => {
+  const deadline = createIdleDeadline(undefined, 30);
+  assert.equal(deadline.signal.aborted, false);
+  assert.equal(deadline.timedOut(), false);
+
+  // 持续 touch 3 次，间隔 15ms，总跨度 45ms（大于 30ms 原始超时）
+  for (let i = 0; i < 3; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    deadline.touch();
+    assert.equal(deadline.signal.aborted, false);
+    assert.equal(deadline.timedOut(), false);
+  }
+
+  // 停止 touch，等待超过 30ms 后应超时中止
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.equal(deadline.signal.aborted, true);
+  assert.equal(deadline.timedOut(), true);
+  deadline.clear();
+});
+
+test('createIdleDeadline 调用方中止传递且 timedOut 为 false', () => {
+  const controller = new AbortController();
+  const deadline = createIdleDeadline(controller.signal, 1000);
+  assert.equal(deadline.signal.aborted, false);
+
+  controller.abort('caller cancel');
+  assert.equal(deadline.signal.aborted, true);
+  assert.equal(deadline.timedOut(), false);
+  assert.equal(deadline.signal.reason, 'caller cancel');
+  deadline.clear();
+});
+
+test('createIdleDeadline 调用方信号预先已中止时立即中止', () => {
+  const controller = new AbortController();
+  controller.abort('pre-aborted');
+  const deadline = createIdleDeadline(controller.signal, 1000);
+
+  assert.equal(deadline.signal.aborted, true);
+  assert.equal(deadline.timedOut(), false);
+  assert.equal(deadline.signal.reason, 'pre-aborted');
+  deadline.clear();
+});
+
+test('createIdleDeadline clear 后超时不再触发', async () => {
+  const deadline = createIdleDeadline(undefined, 20);
+  deadline.clear();
+  deadline.clear();
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(deadline.signal.aborted, false);
+  assert.equal(deadline.timedOut(), false);
+});
+
+test('createIdleDeadline idleMs 不是有限正数时不设定时器', async () => {
+  const deadlineZero = createIdleDeadline(undefined, 0);
+  const deadlineNeg = createIdleDeadline(undefined, -10);
+  const deadlineInf = createIdleDeadline(undefined, Infinity);
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(deadlineZero.signal.aborted, false);
+  assert.equal(deadlineZero.timedOut(), false);
+  assert.equal(deadlineNeg.signal.aborted, false);
+  assert.equal(deadlineNeg.timedOut(), false);
+  assert.equal(deadlineInf.signal.aborted, false);
+  assert.equal(deadlineInf.timedOut(), false);
+
+  deadlineZero.clear();
+  deadlineNeg.clear();
+  deadlineInf.clear();
+});
+

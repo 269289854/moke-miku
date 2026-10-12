@@ -125,6 +125,7 @@ function TinyCover({ title, src }: { title: string; src: string }) {
   if (!src) return fallback;
   return (
     <AuthImage
+      thumb
       src={src}
       alt={title}
       className="w-6 h-9 rounded-sm object-cover shrink-0"
@@ -143,6 +144,7 @@ function MobileCover({ title, src }: { title: string; src: string }) {
   if (!src) return fallback;
   return (
     <AuthImage
+      thumb
       src={src}
       alt={title}
       className="h-[72px] w-12 shrink-0 rounded-md object-cover shadow-sm"

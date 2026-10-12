@@ -228,6 +228,10 @@ test('瞬时下载失败保留断点，校验和存储失败清理断点', () =>
   assert.equal(shouldPreserveOfflinePartial(new TypeError('network interrupted'), true), true);
   assert.equal(shouldPreserveOfflinePartial(new Error('book.download.incomplete'), true), true);
   assert.equal(shouldPreserveOfflinePartial(new Error('book.download.transfer_failed'), true), true);
+  assert.equal(shouldPreserveOfflinePartial(new Error('book.download.stalled'), true), true);
+  assert.equal(shouldPreserveOfflinePartial({ code: 'book.download.stalled' }, true), true);
+  assert.equal(shouldPreserveOfflinePartial(new Error('network.timeout'), true), true);
+  assert.equal(shouldPreserveOfflinePartial({ code: 'network.timeout' }, true), true);
   assert.equal(shouldPreserveOfflinePartial(new Error('http.503'), true), true);
   assert.equal(shouldPreserveOfflinePartial(new DOMException('paused', 'AbortError'), true), true);
   assert.equal(shouldPreserveOfflinePartial(new Error('book.epub.invalid'), true), false);

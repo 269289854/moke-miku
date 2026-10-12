@@ -1,24 +1,37 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { fetchCurrentUser, fetchServerInfo, checkWelcomeRequirement, discoverServerCapabilities } from '@/lib/api';
 import { useServerStore } from '@/lib/store/server';
 import { getServerDiscoveryInputs } from '@/lib/server-capabilities';
 import { navigateFullDocument } from '@/lib/moke-reader';
 import { isServerCapabilitiesFresh, resolveUserAfterSync } from '@/lib/server-session';
+import { getNetworkQuality, subscribeNetworkRecovery } from '@/lib/network-health';
 
 const PUBLIC_PATHS = ['/welcome', '/login', '/register', '/access', '/privacy', '/settings/developer'];
+const SYNC_FAILURE_BACKOFF_MS = 60_000;
+const lastSyncFailureAtByServer = new Map<string, number>();
 
 export function ServerProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { serverUrl, offlineMode, hasHydrated, capabilities, setServerTitle, setUser, setServerCapabilities } = useServerStore();
   const [discoveryServerUrl, capabilitiesCheckedAt] = getServerDiscoveryInputs(serverUrl, capabilities);
+  const [recoveryTick, setRecoveryTick] = useState(0);
 
   // 拓展管理页面是本地功能，不需要连接服务器
   const isExtensionPath = pathname.startsWith('/extensions');
   const isEmbeddedReaderPath = pathname.startsWith('/readest');
+
+  useEffect(() => {
+    return subscribeNetworkRecovery(() => {
+      if (discoveryServerUrl) {
+        lastSyncFailureAtByServer.delete(discoveryServerUrl);
+      }
+      setRecoveryTick((t) => t + 1);
+    });
+  }, [discoveryServerUrl]);
 
   useEffect(() => {
     if (!hasHydrated) return;
@@ -35,6 +48,10 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
     if (offlineMode) return;
     if (PUBLIC_PATHS.includes(pathname) || isExtensionPath || isEmbeddedReaderPath) return;
     if (!discoveryServerUrl) return;
+    if (getNetworkQuality() === 'offline') return;
+
+    const lastFailureAt = lastSyncFailureAtByServer.get(discoveryServerUrl);
+    if (lastFailureAt && Date.now() - lastFailureAt < SYNC_FAILURE_BACKOFF_MS) return;
 
     // 能力探测整轮（checkWelcomeRequirement + fetchCurrentUser + fetchServerInfo
     // + discoverServerCapabilities）较重，结果带 checkedAt 缓存：5 分钟内路由
@@ -49,7 +66,12 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
 
       try {
         const welcome = await checkWelcomeRequirement(discoveryServerUrl);
+        if (welcome.err === 'network.error') {
+          lastSyncFailureAtByServer.set(discoveryServerUrl, Date.now());
+          return;
+        }
         if (!cancelled && welcome.needsAccessCode) {
+          lastSyncFailureAtByServer.delete(discoveryServerUrl);
           console.log('[ServerProvider] needs access code, redirecting to /access');
           router.replace('/access');
           return;
@@ -61,6 +83,17 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
           discoverServerCapabilities(discoveryServerUrl),
         ]);
         if (cancelled) return;
+
+        const anyFulfilled =
+          userResult.status === 'fulfilled' ||
+          serverResult.status === 'fulfilled' ||
+          capabilitiesResult.status === 'fulfilled';
+
+        if (anyFulfilled) {
+          lastSyncFailureAtByServer.delete(discoveryServerUrl);
+        } else {
+          lastSyncFailureAtByServer.set(discoveryServerUrl, Date.now());
+        }
 
         const currentState = useServerStore.getState();
         if (currentState.serverUrl !== discoveryServerUrl) return;
@@ -98,6 +131,7 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
           console.warn('[ServerProvider] capabilities sync failed:', capabilitiesResult.reason);
         }
       } catch (e) {
+        lastSyncFailureAtByServer.set(discoveryServerUrl, Date.now());
         // Welcome/network failures are transient. Preserve the last confirmed
         // user, title, and capability snapshot for the next sync attempt.
         console.error('[ServerProvider] sync error:', e);
@@ -109,7 +143,7 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [capabilitiesCheckedAt, discoveryServerUrl, hasHydrated, isEmbeddedReaderPath, isExtensionPath, offlineMode, pathname, router, setServerCapabilities, setServerTitle, setUser]);
+  }, [capabilitiesCheckedAt, discoveryServerUrl, hasHydrated, isEmbeddedReaderPath, isExtensionPath, offlineMode, pathname, recoveryTick, router, setServerCapabilities, setServerTitle, setUser]);
 
   return <>{children}</>;
 }

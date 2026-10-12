@@ -6,9 +6,13 @@ import {
   buildTauriBinaryHeaders,
   buildTauriRequestInit,
   cancelResponseBodyQuietly,
+  createIdleDeadline,
+  createRequestDeadline,
   drainResponseBodyQuietly,
   getErrorMessage,
   isAbsoluteHttpUrl,
+  isGatewayFailureStatus,
+  isRetryableStatus,
   isTauriIpcAvailable,
   MokeApiError,
   readApiJson,
@@ -31,6 +35,14 @@ import {
   getMokeCacheScope,
   invalidateMokeCacheTags,
 } from '@/lib/moke-cache';
+import {
+  getNetworkQuality,
+  reportNetworkFailure,
+  reportNetworkSuccess,
+} from '@/lib/network-health';
+import { createTaskQueue } from '@/lib/image-queue';
+import { normalizeCoverCacheKey } from '@/lib/cover-url';
+import { shareInFlight } from '@/lib/shared-request';
 export { getErrorMessage, MokeApiError, readApiJson, readJsonResponse } from '@/lib/api-core';
 
 const appPlatform = resolveAppPlatform(process.env.NEXT_PUBLIC_APP_PLATFORM);
@@ -79,7 +91,10 @@ async function validateDownloadedBook(blob: Blob, format: string): Promise<Blob>
 export async function request(
   url: string | URL,
   options?: RequestInit,
-  diagnostics?: { expectedStatuses?: readonly number[] },
+  diagnostics?: {
+    expectedStatuses?: readonly number[];
+    timeoutMs?: number;
+  },
 ): Promise<Response> {
   const urlStr = url.toString();
   const method = (options?.method || 'GET').toUpperCase();
@@ -101,6 +116,13 @@ export async function request(
     credentials: options?.credentials,
   });
 
+  const deadline = typeof diagnostics?.timeoutMs === 'number'
+    ? createRequestDeadline(options?.signal, diagnostics.timeoutMs)
+    : undefined;
+  const requestOptions = deadline
+    ? { ...(options ?? {}), signal: deadline.signal }
+    : options;
+
   let response: Response;
   const startedAt = Date.now();
   try {
@@ -118,20 +140,41 @@ export async function request(
       // Tauri 桌面端：使用插件 fetch。需要显式放宽以兼容自建 Talebook 服务器：
       // - danger.acceptInvalidCerts: 允许自签名 / 内网 HTTPS 证书
       // - maxRedirections: 跟随登录后的重定向（与浏览器行为一致）
-      response = await tauriFetch(urlStr, buildTauriRequestInit(options) as any);
+      response = await tauriFetch(urlStr, buildTauriRequestInit(requestOptions) as any);
     } else {
-      response = await fetch(url, options);
+      response = await fetch(url, requestOptions);
     }
+    deadline?.clear();
   } catch (e) {
+    deadline?.clear();
+    const elapsed = Date.now() - startedAt;
     const errMsg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+
+    if (deadline?.timedOut()) {
+      debugLog('error', 'request', `✗ ${method} ${urlStr} 响应超时 (${elapsed}ms)`, errMsg);
+      reportNetworkFailure('timeout');
+      throw new MokeApiError('服务器响应超时，请检查网络。', 'network.timeout');
+    }
+
     if (isRequestCancelled(e)) {
-      debugLog('info', 'request', `⊘ ${method} ${urlStr} 已取消 (${Date.now() - startedAt}ms)`);
+      debugLog('info', 'request', `⊘ ${method} ${urlStr} 已取消 (${elapsed}ms)`);
       throw e;
     }
-    debugLog('error', 'request', `✗ ${method} ${urlStr} 网络异常 (${Date.now() - startedAt}ms)`, errMsg);
+
+    if (!(e instanceof MokeApiError && e.code === 'tauri.ipc.unavailable')) {
+      reportNetworkFailure('error');
+    }
+
+    debugLog('error', 'request', `✗ ${method} ${urlStr} 网络异常 (${elapsed}ms)`, errMsg);
     // 不在这里弹 toast：页面层各自 catch 后按业务文案提示，
     // 避免网络错误时页面 toast 与这里重复弹出两条。此处只记录日志。
     throw e;
+  }
+
+  if (isGatewayFailureStatus(response.status)) {
+    reportNetworkFailure('gateway');
+  } else {
+    reportNetworkSuccess();
   }
 
   const elapsed = Date.now() - startedAt;
@@ -147,12 +190,51 @@ export async function request(
   return attachSafeJsonReader(response);
 }
 
+function delayWithSignal(ms: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  }
+  return new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+
+    const cleanup = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      if (signal && onAbort) {
+        signal.removeEventListener('abort', onAbort);
+        onAbort = undefined;
+      }
+    };
+
+    onAbort = () => {
+      cleanup();
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+  });
+}
+
 /** Cache a read-only JSON response while keeping all writes and auth endpoints uncached. */
 export async function requestCachedJson(
   url: string,
   options: RequestInit | undefined,
   ttlMs: number,
   staleMs = 7 * 24 * 60 * 60 * 1000,
+  extra?: {
+    onBackgroundUpdate?: (response: Response) => void;
+    revalidateBudgetMs?: number;
+  },
 ): Promise<Response> {
   if ((options?.method || 'GET').toUpperCase() !== 'GET') return request(url, options);
   const scope = await getMokeCacheScope(url);
@@ -163,18 +245,151 @@ export async function requestCachedJson(
   if (parsed.pathname === '/api/search') tags.push('search');
   const detailMatch = parsed.pathname.match(/^\/api\/book\/([^/]+)$/);
   if (detailMatch?.[1]) tags.push(`book:${detailMatch[1]}`);
-  return cachedRequest(
+
+  const onBackgroundUpdateWrapped = extra?.onBackgroundUpdate
+    ? (response: Response) => {
+        try {
+          extra.onBackgroundUpdate!(attachSafeJsonReader(response));
+        } catch {}
+      }
+    : undefined;
+
+  const shouldStore = async (response: Response): Promise<boolean> => {
+    try {
+      const text = await response.clone().text();
+      const data = JSON.parse(text);
+      if (typeof data === 'object' && data !== null) {
+        if (!('err' in data) || (data as { err?: unknown }).err === 'ok') {
+          return true;
+        }
+        return false;
+      }
+      return true;
+    } catch {
+      return true;
+    }
+  };
+
+  const response = await cachedRequest(
     url,
     { kind: 'api', scope, ttlMs, staleMs, tags },
-    (conditionalHeaders) => {
-      const headers = new Headers(options?.headers);
-      conditionalHeaders.forEach((value, key) => headers.set(key, value));
-      return request(url, { ...options, headers });
+    async (conditionalHeaders, sharedSignal) => {
+      const send = () => {
+        const headers = new Headers(options?.headers);
+        conditionalHeaders.forEach((value, key) => headers.set(key, value));
+        return request(url, { ...options, headers, signal: sharedSignal }, { timeoutMs: 20_000 });
+      };
+
+      let firstResponse: Response;
+      try {
+        firstResponse = await send();
+      } catch (e) {
+        if (
+          !isRequestCancelled(e) &&
+          getNetworkQuality() !== 'offline' &&
+          !sharedSignal.aborted
+        ) {
+          const jitterMs = 600 + Math.random() * 300;
+          await delayWithSignal(jitterMs, sharedSignal);
+          return send();
+        }
+        throw e;
+      }
+
+      if (
+        isRetryableStatus(firstResponse.status) &&
+        getNetworkQuality() !== 'offline' &&
+        !sharedSignal.aborted
+      ) {
+        // Drain instead of cancel: cancelling a Tauri body can race its eager pull.
+        await drainResponseBodyQuietly(firstResponse);
+        const jitterMs = 600 + Math.random() * 300;
+        await delayWithSignal(jitterMs, sharedSignal);
+        return send();
+      }
+
+      return firstResponse;
     },
-    // A caller-owned AbortSignal must not share a promise with another caller:
-    // aborting the first React effect would otherwise cancel its replacement.
-    { dedupe: !options?.signal },
+    {
+      signal: options?.signal ?? undefined,
+      revalidateBudgetMs: extra?.revalidateBudgetMs ?? 1200,
+      onBackgroundUpdate: onBackgroundUpdateWrapped,
+      shouldStore,
+      getNetworkQuality,
+    },
   );
+
+  return attachSafeJsonReader(response);
+}
+
+const imageTaskQueue = createTaskQueue({ concurrency: 4, order: 'lifo' });
+
+/**
+ * 通过带认证的 request 获取图片资源的 Blob。
+ * 经由规范化的缓存键缓存、网络质量并发限流的 LIFO 队列请求。
+ */
+export async function fetchImageBlob(
+  imageUrl: string,
+  options?: { signal?: AbortSignal | null },
+): Promise<Blob> {
+  if (!/^https?:\/\//i.test(imageUrl)) {
+    throw new Error('image.url.invalid');
+  }
+  const startedAt = Date.now();
+  debugLog('info', 'image', `→ GET ${imageUrl}`);
+  try {
+    const scope = await getMokeCacheScope();
+    const cacheKey = normalizeCoverCacheKey(imageUrl);
+    const response = await cachedRequest(
+      cacheKey,
+      {
+        kind: 'image',
+        scope,
+        ttlMs: 30 * 24 * 60 * 60 * 1000,
+        staleMs: 365 * 24 * 60 * 60 * 1000,
+        tags: ['account'],
+      },
+      (headers, sharedSignal) => {
+        const quality = getNetworkQuality();
+        imageTaskQueue.setConcurrency(quality === 'good' ? 4 : 2);
+        return imageTaskQueue.run(
+          () =>
+            request(
+              imageUrl,
+              { credentials: 'include', headers, signal: sharedSignal },
+              { timeoutMs: 20_000 },
+            ),
+          { signal: sharedSignal },
+        );
+      },
+      {
+        signal: options?.signal ?? undefined,
+        revalidateBudgetMs: 0,
+        getNetworkQuality,
+      },
+    );
+    if (!response.ok) {
+      debugLog(
+        'error',
+        'image',
+        `✗ ${response.status} 封面/图片加载失败 ${imageUrl} (${Date.now() - startedAt}ms)`,
+        response.status === 401 ? '未授权：登录会话可能未携带或已失效' : `HTTP ${response.status}`,
+      );
+      throw new Error(`image.http.${response.status}`);
+    }
+    const blob = await response.blob();
+    debugLog(
+      'success',
+      'image',
+      `← 图片加载成功 ${imageUrl} (${Date.now() - startedAt}ms)`,
+      { type: blob.type, size: blob.size },
+    );
+    return blob;
+  } catch (e) {
+    const errMsg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    debugLog('error', 'image', `✗ 图片加载异常 ${imageUrl}`, errMsg);
+    throw e;
+  }
 }
 
 /**
@@ -187,48 +402,12 @@ export async function requestCachedJson(
  *
  * 调用方负责在不再使用时 URL.revokeObjectURL 释放。
  */
-export async function fetchImageObjectUrl(imageUrl: string): Promise<string> {
-  if (!/^https?:\/\//i.test(imageUrl)) {
-    throw new Error('image.url.invalid');
-  }
-  const startedAt = Date.now();
-  debugLog('info', 'image', `→ GET ${imageUrl}`);
-  try {
-    const scope = await getMokeCacheScope();
-    const response = await cachedRequest(
-      imageUrl,
-      {
-        kind: 'image',
-        scope,
-        ttlMs: 30 * 24 * 60 * 60 * 1000,
-        staleMs: 7 * 24 * 60 * 60 * 1000,
-        tags: ['account'],
-      },
-      (headers) => request(imageUrl, { credentials: 'include', headers }),
-    );
-    if (!response.ok) {
-      debugLog(
-        'error',
-        'image',
-        `✗ ${response.status} 封面/图片加载失败 ${imageUrl} (${Date.now() - startedAt}ms)`,
-        response.status === 401 ? '未授权：登录会话可能未携带或已失效' : `HTTP ${response.status}`,
-      );
-      throw new Error(`image.http.${response.status}`);
-    }
-    const blob = await response.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    debugLog(
-      'success',
-      'image',
-      `← 图片加载成功 ${imageUrl} (${Date.now() - startedAt}ms)`,
-      { type: blob.type, size: blob.size },
-    );
-    return objectUrl;
-  } catch (e) {
-    const errMsg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    debugLog('error', 'image', `✗ 图片加载异常 ${imageUrl}`, errMsg);
-    throw e;
-  }
+export async function fetchImageObjectUrl(
+  imageUrl: string,
+  options?: { signal?: AbortSignal | null },
+): Promise<string> {
+  const blob = await fetchImageBlob(imageUrl, options);
+  return URL.createObjectURL(blob);
 }
 
 export async function welcomeCheck(code?: string): Promise<{ err: string; msg?: string }> {
@@ -239,19 +418,80 @@ export async function welcomeCheck(code?: string): Promise<{ err: string; msg?: 
     body.append('invite_code', code);
   }
 
-  const response = await request(`${serverUrl}/api/welcome`, {
-    method: code ? 'POST' : 'GET',
-    body: code ? body : undefined,
-    credentials: 'include',
-  });
+  const response = await request(
+    `${serverUrl}/api/welcome`,
+    {
+      method: code ? 'POST' : 'GET',
+      body: code ? body : undefined,
+      credentials: 'include',
+    },
+    code ? undefined : { timeoutMs: 15_000 },
+  );
   return readJsonResponse(response);
+}
+
+interface SharedUserInfoSnapshot {
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  text: string;
+}
+
+function createResponseFromUserInfoSnapshot(snapshot: SharedUserInfoSnapshot): Response {
+  const body = snapshot.status === 204 || snapshot.status === 304 ? null : snapshot.text;
+  const response = new Response(body, {
+    status: snapshot.status,
+    statusText: snapshot.statusText,
+    headers: snapshot.headers,
+  });
+  return attachSafeJsonReader(response);
+}
+
+function hasHeaderEntries(headers?: HeadersInit): boolean {
+  if (!headers) return false;
+  if (headers instanceof Headers) {
+    let count = 0;
+    headers.forEach(() => {
+      count += 1;
+    });
+    return count > 0;
+  }
+  if (Array.isArray(headers)) return headers.length > 0;
+  return Object.keys(headers).length > 0;
+}
+
+async function fetchSharedUserInfo(serverUrl: string): Promise<Response> {
+  const snapshot = await shareInFlight(
+    `user-info\n${serverUrl}`,
+    3_000,
+    async () => {
+      const upstream = await request(
+        `${serverUrl}/api/user/info`,
+        {
+          credentials: 'include',
+        },
+        { timeoutMs: 15_000 },
+      );
+      const text = await upstream.text();
+      const headers: [string, string][] = [];
+      upstream.headers.forEach((value, name) => {
+        headers.push([name, value]);
+      });
+      return {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers,
+        text,
+      };
+    },
+  );
+
+  return createResponseFromUserInfoSnapshot(snapshot);
 }
 
 export async function fetchCurrentUser(): Promise<CurrentUserResult> {
   const { serverUrl } = (await import('@/lib/store/server')).useServerStore.getState();
-  const response = await request(`${serverUrl}/api/user/info`, {
-    credentials: 'include',
-  });
+  const response = await fetchSharedUserInfo(serverUrl);
   return readCurrentUserResponse(response);
 }
 
@@ -271,11 +511,19 @@ export async function fetchServerInfo(): Promise<{ err: string; msg?: string; ti
       staleMs: 7 * 24 * 60 * 60 * 1000,
       tags: ['account', 'server-info'],
     },
-    async (conditionalHeaders) => {
-      const upstream = await request(`${serverUrl}/api/user/info`, {
-        credentials: 'include',
-        headers: conditionalHeaders,
-      });
+    async (conditionalHeaders, signal) => {
+      const hasConditionalHeaders = hasHeaderEntries(conditionalHeaders);
+      const upstream = hasConditionalHeaders
+        ? await request(
+            `${serverUrl}/api/user/info`,
+            {
+              credentials: 'include',
+              headers: conditionalHeaders,
+              signal,
+            },
+            { timeoutMs: 15_000 },
+          )
+        : await fetchSharedUserInfo(serverUrl);
       if (upstream.status === 304) return upstream;
       const data = await readJsonResponse<UserInfoResponse>(upstream.clone());
       return new Response(JSON.stringify({
@@ -317,9 +565,13 @@ export async function invalidateLibraryReadCaches(serverUrl: string): Promise<vo
 
 async function probeJsonEndpoint(serverUrl: string, path: string): Promise<boolean> {
   try {
-    const response = await request(`${serverUrl}${path}`, {
-      credentials: 'include',
-    });
+    const response = await request(
+      `${serverUrl}${path}`,
+      {
+        credentials: 'include',
+      },
+      { timeoutMs: 15_000 },
+    );
 
     if (response.status === 404 || response.status === 405) return false;
 
@@ -339,11 +591,15 @@ async function probeJsonEndpoint(serverUrl: string, path: string): Promise<boole
 }
 
 async function findSampleBookId(serverUrl: string): Promise<string | null> {
-  const candidates = ['/api/shelf', '/api/library?num=1', '/api/library?page=1&num=1'];
+  const candidates = ['/api/library?size=1', '/api/shelf'];
 
   for (const path of candidates) {
     try {
-      const response = await request(`${serverUrl}${path}`, { credentials: 'include' });
+      const response = await request(
+        `${serverUrl}${path}`,
+        { credentials: 'include' },
+        { timeoutMs: 15_000 },
+      );
       if (!response.ok) continue;
 
       const data = await readJsonResponse<any>(response).catch(() => null);
@@ -360,9 +616,7 @@ async function findSampleBookId(serverUrl: string): Promise<string | null> {
 }
 
 export async function discoverServerCapabilities(serverUrl: string): Promise<ServerCapabilities> {
-  const infoResponse = await request(`${serverUrl}/api/user/info`, {
-    credentials: 'include',
-  });
+  const infoResponse = await fetchSharedUserInfo(serverUrl);
   const info = await readJsonResponse<UserInfoResponse>(infoResponse).catch(() => ({} as UserInfoResponse));
 
   return discoverGeneralServerCapabilities({
@@ -387,9 +641,13 @@ export async function validateServerConnection(serverUrl: string): Promise<{ err
     let response: Response;
 
     try {
-      response = await request(`${serverUrl}/api/user/info`, {
-        credentials: 'include',
-      });
+      response = await request(
+        `${serverUrl}/api/user/info`,
+        {
+          credentials: 'include',
+        },
+        { timeoutMs: 15_000 },
+      );
     } catch (e) {
       if (e instanceof MokeApiError && e.code === 'tauri.ipc.unavailable') {
         console.error('[validateServerConnection] Tauri IPC unavailable');
@@ -448,9 +706,13 @@ export async function checkWelcomeRequirement(serverUrl: string): Promise<{ err:
   let response: Response;
 
   try {
-    response = await request(`${serverUrl}/api/welcome`, {
-      credentials: 'include',
-    });
+    response = await request(
+      `${serverUrl}/api/welcome`,
+      {
+        credentials: 'include',
+      },
+      { timeoutMs: 15_000 },
+    );
   } catch (e) {
     console.error('[checkWelcomeRequirement] network error:', e);
     return {
@@ -623,118 +885,161 @@ export async function streamBookDownload(
     onRangeReset?: () => Promise<void>;
     /** Tauri validates the completed on-disk tail, including bytes from an earlier range. */
     validateEpub?: boolean;
+    stallTimeoutMs?: number;
+    expectedTotalBytes?: number | null;
   },
 ): Promise<{ mimeType: string; size: number; sourceSignature?: string; resumed: boolean }> {
-  const { serverUrl } = (await import('@/lib/store/server')).useServerStore.getState();
-  const url = `${serverUrl}/api/book/${bookId}.${format}`;
-  const requestedOffset = Math.max(0, options.resumeFrom || 0);
-  const headers = new Headers();
-  if (requestedOffset > 0) headers.set('Range', `bytes=${requestedOffset}-`);
+  const stallTimeoutMs = options.stallTimeoutMs ?? 45_000;
+  const deadline = createIdleDeadline(options.signal, stallTimeoutMs);
+  let url = '';
 
-  const fetchDownload = (requestHeaders: Headers) => request(
-    url,
-    {
-      ...(isTauriApp
-        ? ({
-            method: 'GET',
-            headers: buildTauriBinaryHeaders(requestHeaders),
-            connectTimeout: 30_000,
-            signal: options.signal,
-          } as any)
-        : { credentials: 'include', signal: options.signal, headers: requestHeaders }),
-    },
-    requestHeaders.has('Range') ? { expectedStatuses: [416] } : undefined,
-  );
-  let response = await fetchDownload(headers);
-  let contentRange = parseContentRange(response.headers.get('content-range'));
-  let rangeMode = classifyOfflineRangeResponse(requestedOffset, response.status, contentRange);
-  if (!response.ok && rangeMode !== 'retry-full') throw new Error(`http.${response.status}`);
-  if (rangeMode === 'retry-full') {
-    if (response.status === 416) {
-      await drainResponseBodyQuietly(response);
-    } else {
-      await cancelResponseBodyQuietly(response);
-    }
-    await options.onRangeReset?.();
-    response = await fetchDownload(new Headers());
-    if (!response.ok) throw new Error(`http.${response.status}`);
-    contentRange = parseContentRange(response.headers.get('content-range'));
-    rangeMode = classifyOfflineRangeResponse(0, response.status, contentRange);
-  }
-  if (rangeMode === 'invalid') throw new Error('book.download.range.invalid');
-  const resumed = rangeMode === 'resume';
-  let received = resumed ? requestedOffset : 0;
-  if (rangeMode === 'restart') await options.onRangeReset?.();
-  const responseLength = Number(response.headers.get('content-length') || 0);
-  const total = contentRange?.total ?? (responseLength > 0 ? received + responseLength : null);
-  const sourceSignature = response.headers.get('etag') || response.headers.get('last-modified') || undefined;
-  const reader = response.body?.getReader();
+  try {
+    const { serverUrl } = (await import('@/lib/store/server')).useServerStore.getState();
+    url = `${serverUrl}/api/book/${bookId}.${format}`;
+    const requestedOffset = Math.max(0, options.resumeFrom || 0);
+    const headers = new Headers();
+    if (requestedOffset > 0) headers.set('Range', `bytes=${requestedOffset}-`);
 
-  if (!reader) {
-    let blob: Blob;
-    try {
-      blob = await response.blob();
-    } catch (error) {
-      logBinaryTransferFailure(url, response, error, 0);
-      throw new Error('book.download.transfer_failed');
+    const fetchDownload = (requestHeaders: Headers) => request(
+      url,
+      {
+        ...(isTauriApp
+          ? ({
+              method: 'GET',
+              headers: buildTauriBinaryHeaders(requestHeaders),
+              connectTimeout: 30_000,
+              signal: deadline.signal,
+            } as any)
+          : { credentials: 'include', signal: deadline.signal, headers: requestHeaders }),
+      },
+      requestHeaders.has('Range') ? { expectedStatuses: [416] } : undefined,
+    );
+    let response = await fetchDownload(headers);
+    let contentRange = parseContentRange(response.headers.get('content-range'));
+    let rangeMode = classifyOfflineRangeResponse(requestedOffset, response.status, contentRange);
+    if (
+      rangeMode === 'resume' &&
+      typeof options.expectedTotalBytes === 'number' &&
+      options.expectedTotalBytes > 0 &&
+      typeof contentRange?.total === 'number' &&
+      contentRange.total !== options.expectedTotalBytes
+    ) {
+      rangeMode = 'retry-full';
+    }
+    if (!response.ok && rangeMode !== 'retry-full') throw new Error(`http.${response.status}`);
+    if (rangeMode === 'retry-full') {
+      if (response.status === 416) {
+        await drainResponseBodyQuietly(response);
+      } else {
+        await cancelResponseBodyQuietly(response);
+      }
+      await options.onRangeReset?.();
+      deadline.touch();
+      response = await fetchDownload(new Headers());
+      if (!response.ok) throw new Error(`http.${response.status}`);
+      contentRange = parseContentRange(response.headers.get('content-range'));
+      rangeMode = classifyOfflineRangeResponse(0, response.status, contentRange);
+    }
+    if (rangeMode === 'invalid') throw new Error('book.download.range.invalid');
+    const resumed = rangeMode === 'resume';
+    let received = resumed ? requestedOffset : 0;
+    if (rangeMode === 'restart') await options.onRangeReset?.();
+    const responseLength = Number(response.headers.get('content-length') || 0);
+    const total = contentRange?.total ?? (responseLength > 0 ? received + responseLength : null);
+    const sourceSignature = response.headers.get('etag') || response.headers.get('last-modified') || undefined;
+    const reader = response.body?.getReader();
+
+    if (!reader) {
+      let blob: Blob;
+      try {
+        blob = await response.blob();
+      } catch (error) {
+        if (deadline.timedOut()) throw new Error('book.download.stalled');
+        if (isRequestCancelled(error)) throw error;
+        logBinaryTransferFailure(url, response, error, 0);
+        throw new Error('book.download.transfer_failed');
+      }
+
+      try {
+        await options.write(new Uint8Array(await blob.arrayBuffer()));
+      } catch (error) {
+        logOfflineWriteFailure(error, blob.size);
+        throw new Error('book.download.storage_failed');
+      }
+      received += blob.size;
+      options.onTransfer?.(received, total);
+      options.onProgress?.(99);
+      if (total != null && received !== total) throw new Error('book.download.incomplete');
+      if (options.validateEpub !== false && format.toLowerCase() === 'epub' && !(await hasEpubCentralDirectory(blob))) {
+        throw new Error('book.epub.invalid');
+      }
+      return { mimeType: response.headers.get('content-type') || 'application/octet-stream', size: received, sourceSignature, resumed };
     }
 
-    try {
-      await options.write(new Uint8Array(await blob.arrayBuffer()));
-    } catch (error) {
-      logOfflineWriteFailure(error, blob.size);
-      throw new Error('book.download.storage_failed');
+    let tail: Uint8Array = new Uint8Array(0);
+    while (true) {
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await reader.read();
+      } catch (error) {
+        if (deadline.timedOut()) throw new Error('book.download.stalled');
+        if (isRequestCancelled(error)) throw error;
+        logBinaryTransferFailure(url, response, error, received);
+        throw new Error('book.download.transfer_failed');
+      }
+
+      const { done, value } = result;
+      if (done) break;
+      if (!value) continue;
+
+      deadline.touch();
+
+      try {
+        await options.write(value);
+      } catch (error) {
+        try {
+          await reader.cancel(error);
+        } catch {
+          // 原始写入错误更有诊断价值，取消失败不覆盖它。
+        }
+        logOfflineWriteFailure(error, received);
+        throw new Error('book.download.storage_failed');
+      }
+      received += value.length;
+      tail = keepTailBytes(tail, value, BOOK_TAIL_WINDOW);
+      options.onTransfer?.(received, total);
+      if (total && total > 0) options.onProgress?.(Math.min(99, Math.round((received / total) * 100)));
     }
-    received += blob.size;
-    options.onTransfer?.(received, total);
     options.onProgress?.(99);
     if (total != null && received !== total) throw new Error('book.download.incomplete');
-    if (options.validateEpub !== false && format.toLowerCase() === 'epub' && !(await hasEpubCentralDirectory(blob))) {
+    if (options.validateEpub !== false && format.toLowerCase() === 'epub' && !(await hasEpubCentralDirectory(new Blob([tail])))) {
       throw new Error('book.epub.invalid');
     }
-    return { mimeType: response.headers.get('content-type') || 'application/octet-stream', size: received, sourceSignature, resumed };
-  }
-
-  let tail: Uint8Array = new Uint8Array(0);
-  while (true) {
-    let result: ReadableStreamReadResult<Uint8Array>;
-    try {
-      result = await reader.read();
-    } catch (error) {
-      if (isRequestCancelled(error)) throw error;
-      logBinaryTransferFailure(url, response, error, received);
-      throw new Error('book.download.transfer_failed');
+    return {
+      mimeType: response.headers.get('content-type') || 'application/octet-stream',
+      size: received,
+      sourceSignature,
+      resumed,
+    };
+  } catch (error) {
+    if (deadline.timedOut()) {
+      throw new Error('book.download.stalled');
     }
-
-    const { done, value } = result;
-    if (done) break;
-    if (!value) continue;
-
-    try {
-      await options.write(value);
-    } catch (error) {
-      try {
-        await reader.cancel(error);
-      } catch {
-        // 原始写入错误更有诊断价值，取消失败不覆盖它。
+    if (options.signal?.aborted) {
+      if ((error as { name?: string })?.name === 'AbortError') {
+        throw error;
       }
-      logOfflineWriteFailure(error, received);
-      throw new Error('book.download.storage_failed');
+      throw new DOMException('Aborted', 'AbortError');
     }
-    received += value.length;
-    tail = keepTailBytes(tail, value, BOOK_TAIL_WINDOW);
-    options.onTransfer?.(received, total);
-    if (total && total > 0) options.onProgress?.(Math.min(99, Math.round((received / total) * 100)));
+    if (error instanceof Error && (error.message.startsWith('book.') || error.message.startsWith('http.'))) {
+      throw error;
+    }
+    if (error instanceof MokeApiError && error.code === 'tauri.ipc.unavailable') {
+      throw error;
+    }
+    debugLog('error', 'download', `✗ 下载请求异常 ${url || bookId}`, binaryTransferErrorDetail(error));
+    throw new Error('book.download.transfer_failed');
+  } finally {
+    deadline.clear();
   }
-  options.onProgress?.(99);
-  if (total != null && received !== total) throw new Error('book.download.incomplete');
-  if (options.validateEpub !== false && format.toLowerCase() === 'epub' && !(await hasEpubCentralDirectory(new Blob([tail])))) {
-    throw new Error('book.epub.invalid');
-  }
-  return {
-    mimeType: response.headers.get('content-type') || 'application/octet-stream',
-    size: received,
-    sourceSignature,
-    resumed,
-  };
 }

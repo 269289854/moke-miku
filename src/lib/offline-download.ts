@@ -1,6 +1,8 @@
 'use client';
 
-import { downloadBookBlob, request, streamBookDownload } from '@/lib/api';
+import { downloadBookBlob, fetchImageBlob, streamBookDownload } from '@/lib/api';
+import { createRequestDeadline } from '@/lib/api-core';
+import { buildCoverThumbUrl } from '@/lib/cover-url';
 import { beginOfflineDownload, endOfflineDownload } from '@/lib/offline-book-core';
 import { saveOfflineBook, saveOfflineBookStream } from '@/lib/offline-books';
 import { useSettingsStore } from '@/lib/store/settings';
@@ -22,14 +24,29 @@ export interface DownloadOfflineBookOptions {
   resume?: boolean;
   preservePartialOnFailure?: boolean;
   accountKey?: string;
+  expectedTotalBytes?: number | null;
 }
 
 async function fetchCoverDataUrl(coverUrl?: string, signal?: AbortSignal): Promise<string | undefined> {
   if (!coverUrl) return undefined;
+  const deadline = createRequestDeadline(signal, 8_000);
   try {
-    const response = await request(coverUrl, { credentials: 'include', signal });
-    if (!response.ok) return undefined;
-    const blob = await response.blob();
+    const thumbUrl = buildCoverThumbUrl(coverUrl);
+    let blob: Blob | undefined;
+    try {
+      blob = await fetchImageBlob(thumbUrl, { signal: deadline.signal });
+    } catch {
+      if (thumbUrl !== coverUrl && !deadline.signal.aborted) {
+        try {
+          blob = await fetchImageBlob(coverUrl, { signal: deadline.signal });
+        } catch {
+          return undefined;
+        }
+      } else {
+        return undefined;
+      }
+    }
+    if (!blob) return undefined;
     return await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result));
@@ -38,6 +55,8 @@ async function fetchCoverDataUrl(coverUrl?: string, signal?: AbortSignal): Promi
     });
   } catch {
     return undefined;
+  } finally {
+    deadline.clear();
   }
 }
 
@@ -72,6 +91,7 @@ export async function downloadAndSaveOfflineBook(options: DownloadOfflineBookOpt
         resumeFrom: writer.position,
         onRangeReset: () => writer.truncate(),
         validateEpub: false,
+        expectedTotalBytes: options.expectedTotalBytes,
       }),
     });
     return;

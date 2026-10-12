@@ -554,10 +554,25 @@ export function shouldPreserveOfflinePartial(error: unknown, enabled?: boolean):
   if (!enabled) return false;
   if (error instanceof DOMException && error.name === 'AbortError') return true;
   if (error instanceof TypeError) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return message === 'book.download.incomplete'
-    || message === 'book.download.transfer_failed'
-    || /^http\.(408|429|5\d\d)$/.test(message);
+  const code = typeof (error as { code?: unknown })?.code === 'string'
+    ? (error as { code: string }).code
+    : undefined;
+  const rawMessage = error instanceof Error
+    ? error.message
+    : typeof (error as { message?: unknown })?.message === 'string'
+      ? (error as { message: string }).message
+      : String(error);
+
+  const matches = (value: string | undefined): boolean => {
+    if (!value) return false;
+    return value === 'book.download.incomplete'
+      || value === 'book.download.transfer_failed'
+      || value === 'book.download.stalled'
+      || value === 'network.timeout'
+      || /^http\.(408|429|5\d\d)$/.test(value);
+  };
+
+  return matches(code) || matches(rawMessage);
 }
 
 export async function saveOfflineBookStream(input: {

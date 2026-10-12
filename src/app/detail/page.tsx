@@ -49,6 +49,10 @@ import {
   selectPreferredBookFormat,
   type MokeBookSource,
 } from '@/lib/moke-book-source';
+import { useToast } from '@/lib/toast';
+import { readMokeCacheState } from '@/lib/moke-cache';
+import { notifyStaleContent } from '@/lib/stale-notice';
+
 
 interface BookDetail {
   id: string;
@@ -81,6 +85,8 @@ function DetailContent() {
   const id = searchParams.get('id');
   const router = useRouter();
   const { serverUrl, offlineMode, capabilities, user } = useServerStore();
+  const toast = useToast((s) => s.show);
+
   const [book, setBook] = useState<BookDetail | null>(null);
   const [offlineRecord, setOfflineRecord] = useState<OfflineBookRecord | null>(null);
   const [loading, setLoading] = useState(true);
@@ -195,32 +201,65 @@ function DetailContent() {
         setInShelf(localRecords.some((item) => item.inShelf === true));
         return;
       }
+      const applyBookDetailResponse = async (response: Response, isBackground = false) => {
+        const data = await readApiJson<{ err?: string; msg?: string; book?: BookDetail; data?: BookDetail }>(
+          response,
+          '书籍详情解析失败。',
+          ['ok', 'user.need_login'],
+        );
+        if (controller.signal.aborted || seq !== loadBookSeqRef.current) return;
+        if (data.err === 'user.need_login') {
+          if (!isBackground) {
+            router.push('/login');
+          }
+          return;
+        }
+        const nextBook = data.book || data.data;
+        if (data.err === 'ok' && nextBook) {
+          setBook(nextBook);
+          const detailShelfState = bookDetailShelfState(nextBook);
+          if (isBackground) {
+            if (detailShelfState !== undefined) {
+              setInShelf(detailShelfState);
+            }
+          } else {
+            setInShelf(detailShelfState ?? false);
+            const format = selectPreferredBookFormat(nextBook.files) ?? 'epub';
+            setSelectedFormat(format);
+            // 游客不访问需要登录的 readstate 接口。仅对已登录用户兼容旧版
+            // Talebook 未在详情响应中携带书架状态的情况。
+            if (shouldLoadReadingStateFallback(detailShelfState, Boolean(user))) {
+              loadReadingState(nextBook?.id || String(id), seq);
+            }
+          }
+        } else {
+          if (!isBackground) {
+            throw new Error(data.msg || '书籍详情加载失败。');
+          }
+        }
+      };
+
       const res = await requestCachedJson(
         `${serverUrl}/api/book/${id}`,
         { credentials: 'include', signal: controller.signal },
         30 * 60 * 1000,
+        undefined,
+        {
+          onBackgroundUpdate: async (bgRes) => {
+            if (controller.signal.aborted || seq !== loadBookSeqRef.current) return;
+            try {
+              await applyBookDetailResponse(bgRes, true);
+            } catch (error) {
+              console.warn('书籍详情后台刷新失败:', error);
+            }
+          },
+        },
       );
-      const data = await readApiJson<{ err?: string; msg?: string; book?: BookDetail; data?: BookDetail }>(res, '书籍详情解析失败。', ['ok', 'user.need_login']);
-      if (data.err === 'user.need_login') {
-        router.push('/login');
-        return;
-      }
       if (controller.signal.aborted || seq !== loadBookSeqRef.current) return;
-      const nextBook = data.book || data.data;
-      if (data.err === 'ok' && nextBook) {
-        setBook(nextBook);
-        const detailShelfState = bookDetailShelfState(nextBook);
-        setInShelf(detailShelfState ?? false);
-        const format = selectPreferredBookFormat(nextBook.files) ?? 'epub';
-        setSelectedFormat(format);
-        // 游客不访问需要登录的 readstate 接口。仅对已登录用户兼容旧版
-        // Talebook 未在详情响应中携带书架状态的情况。
-        if (shouldLoadReadingStateFallback(detailShelfState, Boolean(user))) {
-          loadReadingState(nextBook?.id || String(id), seq);
-        }
-      } else {
-        throw new Error(data.msg || '书籍详情加载失败。');
+      if (readMokeCacheState(res) === 'stale') {
+        notifyStaleContent((msg) => toast(msg));
       }
+      await applyBookDetailResponse(res, false);
     } catch (error) {
       if (controller.signal.aborted || seq !== loadBookSeqRef.current) return;
       setBook(null);
@@ -433,11 +472,11 @@ function DetailContent() {
       const loadRecord = async () => offlineMode && offlineRecord?.format === selectedFormat
         ? offlineRecord
         : getOfflineBook(activeServerUrl, id!, selectedFormat);
-      const [record, initialProgress, currentPlatform] = await Promise.all([
-        loadRecord(),
+      const record = await loadRecord();
+      const [initialProgress, currentPlatform] = await Promise.all([
         targetAnnotation
           ? Promise.resolve(annotationReaderProgress(targetAnnotation, book.id))
-          : fetchReadingProgress(book.id),
+          : fetchReadingProgress(book.id, { timeoutMs: record?.filePath ? 2_500 : 8_000 }),
         getMokeRuntimePlatform(),
       ]);
 

@@ -60,6 +60,174 @@ export function buildTauriBinaryHeaders(headers?: HeadersInit): Headers {
   return result;
 }
 
+export interface RequestDeadline {
+  signal: AbortSignal;
+  timedOut(): boolean;
+  clear(): void;
+}
+
+export function createRequestDeadline(
+  callerSignal: AbortSignal | null | undefined,
+  timeoutMs: number,
+): RequestDeadline {
+  const controller = new AbortController();
+  let timedOutState = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
+
+  const clear = () => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (callerSignal && abortHandler) {
+      callerSignal.removeEventListener('abort', abortHandler);
+      abortHandler = undefined;
+    }
+  };
+
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      if (callerSignal.reason !== undefined) {
+        controller.abort(callerSignal.reason);
+      } else {
+        controller.abort();
+      }
+    } else {
+      abortHandler = () => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        if (callerSignal.reason !== undefined) {
+          controller.abort(callerSignal.reason);
+        } else {
+          controller.abort();
+        }
+      };
+      callerSignal.addEventListener('abort', abortHandler, { once: true });
+    }
+  }
+
+  if (!controller.signal.aborted && typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOutState = true;
+      if (callerSignal && abortHandler) {
+        callerSignal.removeEventListener('abort', abortHandler);
+        abortHandler = undefined;
+      }
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOutState,
+    clear,
+  };
+}
+
+export interface IdleDeadline {
+  signal: AbortSignal;
+  touch(): void;
+  timedOut(): boolean;
+  clear(): void;
+}
+
+export function createIdleDeadline(
+  callerSignal: AbortSignal | null | undefined,
+  idleMs: number,
+): IdleDeadline {
+  const controller = new AbortController();
+  let timedOutState = false;
+  let isCleared = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
+
+  const clear = () => {
+    isCleared = true;
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (callerSignal && abortHandler) {
+      callerSignal.removeEventListener('abort', abortHandler);
+      abortHandler = undefined;
+    }
+  };
+
+  const onTimeout = () => {
+    timedOutState = true;
+    if (callerSignal && abortHandler) {
+      callerSignal.removeEventListener('abort', abortHandler);
+      abortHandler = undefined;
+    }
+    controller.abort();
+  };
+
+  const schedule = () => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (
+      !isCleared &&
+      !controller.signal.aborted &&
+      typeof idleMs === 'number' &&
+      Number.isFinite(idleMs) &&
+      idleMs > 0
+    ) {
+      timer = setTimeout(onTimeout, idleMs);
+    }
+  };
+
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      if (callerSignal.reason !== undefined) {
+        controller.abort(callerSignal.reason);
+      } else {
+        controller.abort();
+      }
+    } else {
+      abortHandler = () => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        if (callerSignal.reason !== undefined) {
+          controller.abort(callerSignal.reason);
+        } else {
+          controller.abort();
+        }
+      };
+      callerSignal.addEventListener('abort', abortHandler, { once: true });
+    }
+  }
+
+  schedule();
+
+  const touch = () => {
+    if (isCleared || controller.signal.aborted) return;
+    schedule();
+  };
+
+  return {
+    signal: controller.signal,
+    touch,
+    timedOut: () => timedOutState,
+    clear,
+  };
+}
+
+
+export function isGatewayFailureStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504 || (status >= 520 && status <= 527) || status === 530;
+}
+
+export function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status === 500 || isGatewayFailureStatus(status);
+}
+
 export async function cancelResponseBodyQuietly(response: Pick<Response, 'body'>): Promise<void> {
   try { await response.body?.cancel(); } catch { /* disposal must not mask the retry */ }
 }

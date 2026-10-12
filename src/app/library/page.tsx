@@ -26,6 +26,9 @@ import { useLongPressRegistry } from '@/lib/long-press';
 import { useToast } from '@/lib/toast';
 import { BookOpen, Check, Download, ListChecks, X } from 'lucide-react';
 import { BookCoverFallback } from '@/components/book/BookCoverFallback';
+import { readMokeCacheState } from '@/lib/moke-cache';
+import { notifyStaleContent } from '@/lib/stale-notice';
+
 import {
   buildLibraryRequestParams,
   hasMoreLibraryBooks,
@@ -215,20 +218,47 @@ export default function LibraryPage() {
         format: selectedFormat,
         tag: selectedTag,
       });
+      const applyBooksResponse = async (response: Response, isAppend: boolean, baseOffset: number) => {
+        const data = await readApiJson<{ err?: string; msg?: string; books?: BookItem[]; items?: BookItem[]; total?: number }>(
+          response,
+          '书库列表解析失败。',
+          ['ok', 'user.need_login'],
+        );
+        if (controller.signal.aborted || seq !== booksSeqRef.current) return;
+        if (data.err === 'user.need_login') { router.push('/login'); return; }
+        const incoming = data.books || data.items || [];
+        const responseTotal = data.total || 0;
+        setBooks((current) => isAppend ? mergeUniqueLibraryBooks(current, incoming) : incoming);
+        setTotal(responseTotal);
+        setNextOffset(baseOffset + incoming.length);
+        setHasMore(hasMoreLibraryBooks(baseOffset, incoming.length, responseTotal));
+      };
+
+      const extra = (!append && offset === 0)
+        ? {
+            onBackgroundUpdate: async (bgRes: Response) => {
+              if (controller.signal.aborted || seq !== booksSeqRef.current) return;
+              try {
+                await applyBooksResponse(bgRes, false, 0);
+              } catch (error) {
+                console.warn('书库后台刷新失败:', error);
+              }
+            },
+          }
+        : undefined;
+
       const res = await requestCachedJson(
         serverUrl + '/api/library?' + params.toString(),
         { credentials: 'include', signal: controller.signal },
         5 * 60 * 1000,
+        undefined,
+        extra,
       );
-      const data = await readApiJson<{ err?: string; msg?: string; books?: BookItem[]; items?: BookItem[]; total?: number }>(res, '书库列表解析失败。', ['ok', 'user.need_login']);
-      if (seq !== booksSeqRef.current) return;
-      if (data.err === 'user.need_login') { router.push('/login'); return; }
-      const incoming = data.books || data.items || [];
-      const responseTotal = data.total || 0;
-      setBooks((current) => append ? mergeUniqueLibraryBooks(current, incoming) : incoming);
-      setTotal(responseTotal);
-      setNextOffset(offset + incoming.length);
-      setHasMore(hasMoreLibraryBooks(offset, incoming.length, responseTotal));
+      if (controller.signal.aborted || seq !== booksSeqRef.current) return;
+      if (readMokeCacheState(res) === 'stale') {
+        notifyStaleContent((msg) => toast(msg));
+      }
+      await applyBooksResponse(res, append, offset);
     } catch (error) {
       if (seq !== booksSeqRef.current) return;
       if (controller.signal.aborted || /abort|cancel/i.test(error instanceof Error ? error.message : String(error))) return;
@@ -1023,6 +1053,7 @@ export default function LibraryPage() {
                       <div className="book-cover-motion relative w-full overflow-hidden rounded-[18px] bg-white book-cover-shadow ring-1 ring-black/5 transition-all duration-300 ease-out group-hover:-translate-y-1.5" style={{ aspectRatio: '2/3' }}>
                         {coverUrl ? (
                           <AuthImage
+                            thumb
                             src={coverUrl}
                             alt={book.title}
                             className="book-cover-media w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
@@ -1058,6 +1089,7 @@ export default function LibraryPage() {
                       <div className="book-list-cover-motion h-[72px] w-12 rounded-md overflow-hidden shadow-card shrink-0 flex items-center justify-center relative sm:h-[84px] sm:w-14">
                         {coverUrl ? (
                           <AuthImage
+                            thumb
                             src={coverUrl}
                             alt={book.title}
                             className="w-full h-full object-cover"
