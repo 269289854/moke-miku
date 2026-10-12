@@ -5,6 +5,8 @@ import {
 } from './annotation-capability.ts';
 
 export interface ServerCapabilities {
+  passwordLoginApi: boolean;
+  deviceApiKeyApi: boolean;
   shelfApi: boolean;
   annotationApiStatus: AnnotationCapabilityStatus;
   annotationApiCheckedAt: number | null;
@@ -30,6 +32,8 @@ export interface ServerCapabilityDiscoveryDependencies {
 const uncheckedAnnotationCapability = createUncheckedAnnotationCapability();
 
 export const DEFAULT_SERVER_CAPABILITIES: ServerCapabilities = {
+  passwordLoginApi: false,
+  deviceApiKeyApi: false,
   shelfApi: false,
   annotationApiStatus: uncheckedAnnotationCapability.status,
   annotationApiCheckedAt: uncheckedAnnotationCapability.checkedAt,
@@ -63,6 +67,8 @@ export function mergePersistedServerCapabilities(
       : 'unchecked';
   const persistedAnnotationCheckedAt = persistedCapabilities?.annotationApiCheckedAt;
   const persistedGeneralCheckedAt = persistedCapabilities?.checkedAt;
+  const hasPersistedAuthCapabilities = typeof persistedCapabilities?.passwordLoginApi === 'boolean'
+    && typeof persistedCapabilities?.deviceApiKeyApi === 'boolean';
   const annotationApiCheckedAt = annotationApiStatus === 'unchecked'
     ? null
     : typeof persistedAnnotationCheckedAt === 'number'
@@ -80,7 +86,9 @@ export function mergePersistedServerCapabilities(
     annotationApiCheckedAt,
     // Stores created before annotationApi existed need one fresh general
     // discovery instead of temporarily trusting stale capability flags.
-    checkedAt: hasPersistedAnnotationCapability && typeof persistedGeneralCheckedAt === 'number'
+    checkedAt: hasPersistedAnnotationCapability
+      && hasPersistedAuthCapabilities
+      && typeof persistedGeneralCheckedAt === 'number'
       ? persistedGeneralCheckedAt
       : null,
   };
@@ -106,6 +114,8 @@ export async function discoverGeneralServerCapabilities({
   ]);
 
   return {
+    passwordLoginApi: false,
+    deviceApiKeyApi: false,
     shelfApi,
     annotationApiStatus: 'unchecked',
     annotationApiCheckedAt: null,

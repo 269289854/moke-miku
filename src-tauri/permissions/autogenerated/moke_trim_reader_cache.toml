@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-moke-trim-reader-cache"
+description = "Enables the moke_trim_reader_cache command without any pre-configured scope."
+commands.allow = ["moke_trim_reader_cache"]
+
+[[permission]]
+identifier = "deny-moke-trim-reader-cache"
+description = "Denies the moke_trim_reader_cache command without any pre-configured scope."
+commands.deny = ["moke_trim_reader_cache"]

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   deleteOfflineBook,
   getOfflineBook,
+  listOfflineBooks,
   saveOfflineBook,
   saveOfflineBookStream,
   shouldPreserveOfflinePartial,
@@ -547,4 +548,46 @@ test('桌面版以磁盘索引校验 IndexedDB，文件已不存在时不误显�
   };
 
   assert.equal(await getOfflineBook('https://a.example', '42'), null);
+});
+
+test('升级后原生索引缺失时恢复仍存在的下载且不读取书籍内容', async () => {
+  const { indexedDB, calls, recordedBooks } = installTauriOfflineStore();
+  const id = makeOfflineBookKey('https://a.example', '42', 'epub');
+  indexedDB.records.set(id, {
+    id, serverUrl: 'https://a.example', bookId: '42', format: 'epub',
+    title: 'Existing book', fileName: 'existing.epub', mimeType: 'application/epub+zip',
+    size: 26, updatedAt: 123, accountKey: 'account-1',
+    relativePath: 'books/a.example/42/epub/existing.epub',
+    filePath: '/data/user/0/org.houheya.moke/books/a.example/42/epub/existing.epub',
+  });
+
+  const recovered = await getOfflineBook('https://a.example', '42', 'epub');
+  assert.equal(recovered?.id, id);
+  assert.equal(recovered?.accountKey, 'account-1');
+  assert.equal(recordedBooks.length, 1);
+  assert.equal(recordedBooks[0].id, id);
+  assert.ok(!calls.some(({ command }) => ['plugin:fs|open', 'plugin:fs|read'].includes(command)));
+});
+
+test('离线列表恢复已存在的旧下载并过滤不存在的文件', async () => {
+  const { indexedDB, calls } = installTauriOfflineStore();
+  const originalInvoke = window.__TAURI_INTERNALS__.invoke;
+  window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+    if (command === 'plugin:fs|stat' && args.path.endsWith('missing.epub')) {
+      throw new Error('File not found');
+    }
+    return originalInvoke(command, args);
+  };
+  for (const name of ['existing', 'missing']) {
+    const id = makeOfflineBookKey('https://a.example', name, 'epub');
+    indexedDB.records.set(id, {
+      id, serverUrl: 'https://a.example', bookId: name, format: 'epub',
+      title: name, fileName: `${name}.epub`, mimeType: 'application/epub+zip',
+      size: 26, updatedAt: 123, relativePath: `books/${name}.epub`,
+      filePath: `/data/user/0/org.houheya.moke/books/${name}.epub`,
+    });
+  }
+  const records = await listOfflineBooks('https://a.example');
+  assert.deepEqual(records.map(record => record.bookId), ['existing']);
+  assert.equal(calls.filter(({ command }) => command === 'moke_record_downloaded_book').length, 1);
 });

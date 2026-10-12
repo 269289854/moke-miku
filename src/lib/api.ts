@@ -32,6 +32,7 @@ import {
 import { discoverGeneralServerCapabilities } from '@/lib/server-capabilities';
 import {
   cachedRequest,
+  clearCurrentAccountMokeCache,
   getMokeCacheScope,
   invalidateMokeCacheTags,
 } from '@/lib/moke-cache';
@@ -43,10 +44,52 @@ import {
 import { createTaskQueue } from '@/lib/image-queue';
 import { normalizeCoverCacheKey } from '@/lib/cover-url';
 import { shareInFlight } from '@/lib/shared-request';
+import {
+  authenticationFallbackDestination,
+  clearDeviceCredential,
+  emitAuthenticationRequired,
+  loadDeviceCredential,
+  type DeviceApiKeyInfo,
+} from '@/lib/device-auth';
+import {
+  isRecoveryContextCurrent,
+  responseNeedsSessionRecovery,
+  SessionRecoveryCoordinator,
+  type SessionRecoveryResult,
+} from '@/lib/session-recovery';
 export { getErrorMessage, MokeApiError, readApiJson, readJsonResponse } from '@/lib/api-core';
 
 const appPlatform = resolveAppPlatform(process.env.NEXT_PUBLIC_APP_PLATFORM);
 const isTauriApp = appPlatform === 'tauri';
+const sessionRecoveryCoordinator = new SessionRecoveryCoordinator();
+
+interface RequestDiagnostics {
+  expectedStatuses?: readonly number[];
+  skipSessionRecovery?: boolean;
+  timeoutMs?: number;
+  recoveryAttempt?: { attempted: boolean };
+}
+
+export interface WelcomeRequirement {
+  err: string;
+  msg?: string;
+  needsAccessCode: boolean;
+  passwordLoginApi: boolean;
+  deviceApiKeyApi: boolean;
+}
+
+export interface DeviceApiKeyResponse {
+  err: string;
+  msg?: string;
+  api_key?: string;
+  api_key_info?: DeviceApiKeyInfo;
+}
+
+export interface DeviceApiKeyListResponse {
+  err: string;
+  msg?: string;
+  api_keys: DeviceApiKeyInfo[];
+}
 
 function isRequestCancelled(error: unknown): boolean {
   if (error instanceof DOMException && error.name === 'AbortError') return true;
@@ -91,13 +134,12 @@ async function validateDownloadedBook(blob: Blob, format: string): Promise<Blob>
 export async function request(
   url: string | URL,
   options?: RequestInit,
-  diagnostics?: {
-    expectedStatuses?: readonly number[];
-    timeoutMs?: number;
-  },
+  diagnostics?: RequestDiagnostics,
 ): Promise<Response> {
   const urlStr = url.toString();
   const method = (options?.method || 'GET').toUpperCase();
+  const { useServerStore } = await import('@/lib/store/server');
+  const authenticationContext = useServerStore.getState();
 
   // 关键检测：Tauri 桌面端必须使用绝对 URL（http(s)://...），
   // 否则没有"当前域名"可拼接，会直接网络异常。
@@ -187,7 +229,81 @@ export async function request(
 
   // 历史调用点仍有直接使用 response.json() 的情况。统一改为单次文本读取，
   // 使所有 JSON 入口都不再暴露底层流关闭/解析异常，且可保留纯文本网关原因。
-  return attachSafeJsonReader(response);
+  const readableResponse = attachSafeJsonReader(response);
+  if (!diagnostics?.skipSessionRecovery && !diagnostics?.recoveryAttempt?.attempted
+      && isRecoveryContextCurrent(authenticationContext, useServerStore.getState())
+      && await responseNeedsSessionRecovery(readableResponse, urlStr)) {
+    if (diagnostics?.recoveryAttempt) diagnostics.recoveryAttempt.attempted = true;
+    const serverOrigin = new URL(urlStr).origin;
+    const recovery = await restoreSessionFromStoredApiKey(serverOrigin);
+    if (recovery === 'recovered') {
+      return request(url, options, { ...diagnostics, skipSessionRecovery: true });
+    }
+    if (recovery === 'no_key' || recovery === 'invalid') {
+      const state = useServerStore.getState();
+      if (isRecoveryContextCurrent(authenticationContext, state)
+          && state.serverUrl && new URL(state.serverUrl).origin === serverOrigin) {
+        await clearCurrentAccountMokeCache(await getMokeCacheScope(urlStr));
+        if (isRecoveryContextCurrent(authenticationContext, useServerStore.getState())) {
+          emitAuthenticationRequired(authenticationFallbackDestination(Boolean(state.user)));
+        }
+      }
+    }
+  }
+  return readableResponse;
+}
+
+async function performStoredApiKeyRecovery(serverUrl: string): Promise<SessionRecoveryResult> {
+  const { useServerStore } = await import('@/lib/store/server');
+  const state = useServerStore.getState();
+  if (!state.serverUrl || new URL(state.serverUrl).origin !== new URL(serverUrl).origin) return 'unavailable';
+  const credential = await loadDeviceCredential(serverUrl);
+  if (!isRecoveryContextCurrent(state, useServerStore.getState())) return 'unavailable';
+  if (!credential) return 'no_key';
+  if (state.user && credential.accountUsername !== state.user.username) return 'no_key';
+
+  try {
+    const signInResponse = await request(`${serverUrl}/api/user/api_key/sign_in`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Authorization: `Bearer ${credential.apiKey}` },
+    }, { skipSessionRecovery: true });
+    const signIn = await readJsonResponse<DeviceApiKeyResponse>(signInResponse);
+    if (!isRecoveryContextCurrent(state, useServerStore.getState())) return 'unavailable';
+    if (!signInResponse.ok || signIn.err !== 'ok') {
+      if (signIn.err === 'api_key.invalid') {
+        if ((await loadDeviceCredential(serverUrl)) !== credential
+            || !isRecoveryContextCurrent(state, useServerStore.getState())) return 'unavailable';
+        await clearDeviceCredential(serverUrl);
+        return 'invalid';
+      }
+      return 'unavailable';
+    }
+
+    const userResponse = await request(`${serverUrl}/api/user/info`, {
+      credentials: 'include',
+    }, { skipSessionRecovery: true });
+    const current = await readCurrentUserResponse(userResponse);
+    if (!current.isLogin || !current.user) return 'unavailable';
+
+    if (!isRecoveryContextCurrent(state, useServerStore.getState())) return 'unavailable';
+    try {
+      await clearCurrentAccountMokeCache();
+    } catch (error) {
+      console.warn('[session-recovery] failed to clear stale account cache:', error);
+    }
+    if (!isRecoveryContextCurrent(state, useServerStore.getState())) return 'unavailable';
+    useServerStore.getState().setConnected('', current.user);
+    return 'recovered';
+  } catch (error) {
+    debugLog('warn', 'session-recovery', '设备密钥恢复会话失败', getErrorMessage(error));
+    return 'unavailable';
+  }
+}
+
+export async function restoreSessionFromStoredApiKey(serverUrl: string): Promise<SessionRecoveryResult> {
+  const serverOrigin = new URL(serverUrl).origin;
+  return sessionRecoveryCoordinator.run(serverOrigin, () => performStoredApiKeyRecovery(serverOrigin));
 }
 
 function delayWithSignal(ms: number, signal?: AbortSignal | null): Promise<void> {
@@ -274,10 +390,14 @@ export async function requestCachedJson(
     url,
     { kind: 'api', scope, ttlMs, staleMs, tags },
     async (conditionalHeaders, sharedSignal) => {
+      const recoveryAttempt = { attempted: false };
       const send = () => {
         const headers = new Headers(options?.headers);
         conditionalHeaders.forEach((value, key) => headers.set(key, value));
-        return request(url, { ...options, headers, signal: sharedSignal }, { timeoutMs: 20_000 });
+        return request(url, { ...options, headers, signal: sharedSignal }, {
+          timeoutMs: 20_000,
+          recoveryAttempt,
+        });
       };
 
       let firstResponse: Response;
@@ -495,6 +615,86 @@ export async function fetchCurrentUser(): Promise<CurrentUserResult> {
   return readCurrentUserResponse(response);
 }
 
+export async function signInWithPassword({
+  username,
+  password,
+  rememberDevice,
+  deviceId,
+  deviceName,
+  captchaData,
+}: {
+  username: string;
+  password: string;
+  rememberDevice: boolean;
+  deviceId?: string;
+  deviceName?: string;
+  captchaData?: any;
+}): Promise<DeviceApiKeyResponse> {
+  const { serverUrl } = (await import('@/lib/store/server')).useServerStore.getState();
+  const body = new URLSearchParams();
+  body.append('username', username);
+  body.append('password', password);
+  if (rememberDevice) {
+    body.append('remember_device', 'true');
+    body.append('device_id', deviceId || '');
+    body.append('device_name', deviceName || 'Moke');
+  }
+  if (captchaData) {
+    if (typeof captchaData === 'string') {
+      body.append('captcha_code', captchaData);
+    } else {
+      Object.keys(captchaData).forEach((key) => body.append(key, captchaData[key]));
+    }
+  }
+  const response = await request(`${serverUrl}/api/user/sign_in`, {
+    method: 'POST',
+    body,
+    credentials: 'include',
+    connectTimeout: 20_000,
+  } as RequestInit & { connectTimeout: number }, { skipSessionRecovery: true });
+  return readJsonResponse<DeviceApiKeyResponse>(response);
+}
+
+export async function signInWithDeviceApiKey(apiKey: string): Promise<DeviceApiKeyResponse> {
+  const { serverUrl } = (await import('@/lib/store/server')).useServerStore.getState();
+  const response = await request(`${serverUrl}/api/user/api_key/sign_in`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { Authorization: `Bearer ${apiKey}` },
+  }, { skipSessionRecovery: true });
+  return readJsonResponse<DeviceApiKeyResponse>(response);
+}
+
+export async function fetchDeviceApiKeys(): Promise<DeviceApiKeyListResponse> {
+  const { serverUrl } = (await import('@/lib/store/server')).useServerStore.getState();
+  const response = await request(`${serverUrl}/api/user/api_keys`, { credentials: 'include' });
+  return readJsonResponse<DeviceApiKeyListResponse>(response);
+}
+
+export async function createDeviceApiKey(
+  password: string,
+  deviceId: string,
+  deviceName: string,
+): Promise<DeviceApiKeyResponse> {
+  const { serverUrl } = (await import('@/lib/store/server')).useServerStore.getState();
+  const body = new URLSearchParams({ password, device_id: deviceId, device_name: deviceName });
+  const response = await request(`${serverUrl}/api/user/api_keys`, {
+    method: 'POST',
+    credentials: 'include',
+    body,
+  });
+  return readJsonResponse<DeviceApiKeyResponse>(response);
+}
+
+export async function revokeDeviceApiKey(keyId: number): Promise<{ err: string; msg?: string }> {
+  const { serverUrl } = (await import('@/lib/store/server')).useServerStore.getState();
+  const response = await request(`${serverUrl}/api/user/api_keys/${keyId}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  return readJsonResponse(response);
+}
+
 export async function fetchServerInfo(): Promise<{ err: string; msg?: string; title: string; version: string }> {
   const { serverUrl } = (await import('@/lib/store/server')).useServerStore.getState();
   if (!serverUrl) {
@@ -702,7 +902,7 @@ export async function validateServerConnection(serverUrl: string): Promise<{ err
   return { err: 'server.invalid_response', msg: '服务器校验失败' };
 }
 
-export async function checkWelcomeRequirement(serverUrl: string): Promise<{ err: string; msg?: string; needsAccessCode: boolean }> {
+export async function checkWelcomeRequirement(serverUrl: string): Promise<WelcomeRequirement> {
   let response: Response;
 
   try {
@@ -719,10 +919,12 @@ export async function checkWelcomeRequirement(serverUrl: string): Promise<{ err:
       err: 'network.error',
       msg: '无法检查访问码状态，请检查服务器连接',
       needsAccessCode: false,
+      passwordLoginApi: false,
+      deviceApiKeyApi: false,
     };
   }
 
-  let data: { err?: string; msg?: string; welcome?: string };
+  let data: { err?: string; msg?: string; welcome?: string; auth?: { password_login?: boolean; device_api_key?: boolean } };
 
   try {
     data = await readJsonResponse(response, '服务器返回内容无效，无法确认访问码状态。');
@@ -732,6 +934,8 @@ export async function checkWelcomeRequirement(serverUrl: string): Promise<{ err:
       err: e instanceof MokeApiError ? e.code : 'server.invalid_response',
       msg: getErrorMessage(e, '服务器返回内容无效，无法确认访问码状态。'),
       needsAccessCode: false,
+      passwordLoginApi: false,
+      deviceApiKeyApi: false,
     };
   }
 
@@ -741,6 +945,8 @@ export async function checkWelcomeRequirement(serverUrl: string): Promise<{ err:
       err: data.err || `http.${response.status}`,
       msg: data.msg || '访问码状态检查失败',
       needsAccessCode: false,
+      passwordLoginApi: false,
+      deviceApiKeyApi: false,
     };
   }
 
@@ -751,6 +957,8 @@ export async function checkWelcomeRequirement(serverUrl: string): Promise<{ err:
       err: 'ok',
       msg: data.welcome || data.msg,
       needsAccessCode: true,
+      passwordLoginApi: data.auth?.password_login === true,
+      deviceApiKeyApi: data.auth?.device_api_key === true,
     };
   }
 
@@ -758,6 +966,8 @@ export async function checkWelcomeRequirement(serverUrl: string): Promise<{ err:
     err: 'ok',
     msg: data.msg,
     needsAccessCode: false,
+    passwordLoginApi: data.auth?.password_login === true,
+    deviceApiKeyApi: data.auth?.device_api_key === true,
   };
 }
 

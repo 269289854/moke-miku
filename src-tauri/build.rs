@@ -2,10 +2,24 @@ mod build_config;
 
 // Keep this list in lockstep with readestlib::reader_invoke_handler. The
 // reader-only contract test parses both lists and fails if the submodule's bare
-// command surface drifts. `ext_reader_event` is the one host-owned command: it
-// is declared here so dedicated Reader windows can receive an explicit ACL
-// grant instead of leaving the Moke extension bridge unmanaged.
+// command surface drifts. Host-owned commands are declared here too so each
+// frontend receives an explicit ACL grant for the small Moke bridge it uses.
 const APP_ACL_COMMANDS: &[&str] = &[
+    "moke_runtime_platform",
+    "moke_navigate",
+    "moke_record_downloaded_book",
+    "moke_delete_downloaded_book_file",
+    "moke_open_downloaded_book",
+    "moke_reveal_downloaded_book",
+    "moke_remove_downloaded_book",
+    "moke_select_download_directory",
+    "moke_reset_download_directory",
+    "moke_get_download_directory",
+    "moke_download_storage_stats",
+    "moke_list_downloaded_books",
+    "moke_get_reader_cache_stats",
+    "moke_trim_reader_cache",
+    "moke_clear_reader_cache",
     "open_reader",
     "start_server",
     "download_file",

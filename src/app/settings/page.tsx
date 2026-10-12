@@ -3,9 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, BookOpen, Copy, Database, Download, Eraser, FolderOpen, HardDrive, LogOut, Moon, Package, Palette, PlugZap, RefreshCw, Settings2, ShieldAlert, ShieldCheck, Sun, Trash2, User, Code2, MonitorCog } from 'lucide-react';
+import { ArrowRight, BookOpen, Copy, Database, Download, Eraser, FolderOpen, HardDrive, KeyRound, LogOut, Moon, Package, Palette, PlugZap, Plus, RefreshCw, Settings2, ShieldAlert, ShieldCheck, Sun, Trash2, User, Code2, MonitorCog } from 'lucide-react';
 import { DesktopLayout } from '@/components/layout/DesktopLayout';
-import { fetchServerInfo, request } from '@/lib/api';
+import {
+  createDeviceApiKey,
+  fetchDeviceApiKeys,
+  fetchServerInfo,
+  request,
+  revokeDeviceApiKey,
+} from '@/lib/api';
 import { useServerStore } from '@/lib/store/server';
 import { useDeveloperStore } from '@/lib/store/developer';
 import { resolveTheme, useSettingsStore } from '@/lib/store/settings';
@@ -18,6 +24,12 @@ import { buildMokeAccountCacheScope } from '@/lib/moke-book-source';
 import { safeRemoveLocalStorageItem } from '@/lib/browser-storage';
 import { useToast } from '@/lib/toast';
 import { Select } from '@/components/ui/Select';
+import {
+  clearDeviceCredential,
+  createManualDeviceId,
+  loadDeviceCredential,
+  type DeviceApiKeyInfo,
+} from '@/lib/device-auth';
 import {
   clearCurrentAccountMokeCache,
   clearMokeCache,
@@ -41,7 +53,7 @@ const EMPTY_READER_CACHE_STATS: ReaderCacheStats = { bytes: 0, entries: 0 };
 
 export default function SettingsPage() {
   const router = useRouter();
-  const { serverTitle, serverUrl, offlineMode, enterOfflineMode, leaveOfflineMode, user, disconnect, logout } = useServerStore();
+  const { serverTitle, serverUrl, offlineMode, capabilities, enterOfflineMode, leaveOfflineMode, user, disconnect, logout } = useServerStore();
   const unlocked = useDeveloperStore((s) => s.unlocked);
   const developerEnabled = useDeveloperStore((s) => s.enabled);
   const downloadDirectory = useSettingsStore((s) => s.downloadDirectory);
@@ -55,6 +67,19 @@ export default function SettingsPage() {
   const [readerCacheStats, setReaderCacheStats] = useState<ReaderCacheStats>(EMPTY_READER_CACHE_STATS);
   const [cacheBusy, setCacheBusy] = useState<'reader' | 'page' | 'all' | null>(null);
   const [showClearAllConfirm, setShowClearAllConfirm] = useState(false);
+  const [apiKeys, setApiKeys] = useState<DeviceApiKeyInfo[]>([]);
+  const [apiKeysLoading, setApiKeysLoading] = useState(false);
+  const [apiKeysError, setApiKeysError] = useState('');
+  const [apiKeyBusy, setApiKeyBusy] = useState(false);
+  const [showCreateApiKey, setShowCreateApiKey] = useState(false);
+  const [apiKeyName, setApiKeyName] = useState('');
+  const [apiKeyPassword, setApiKeyPassword] = useState('');
+  const [createdApiKey, setCreatedApiKey] = useState('');
+  const createApiKeyDialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    if (showCreateApiKey) createApiKeyDialogRef.current?.showModal();
+  }, [showCreateApiKey]);
 
   const refreshCacheStats = useCallback(async () => {
     const pageStatsPromise = getMokeCacheStats();
@@ -113,6 +138,29 @@ export default function SettingsPage() {
     void refreshCacheStats();
   }, [refreshCacheStats]);
 
+  const refreshApiKeys = useCallback(async () => {
+    if (!serverUrl || offlineMode || !user || !capabilities.deviceApiKeyApi) {
+      setApiKeys([]);
+      return;
+    }
+    setApiKeysLoading(true);
+    setApiKeysError('');
+    try {
+      const response = await fetchDeviceApiKeys();
+      if (response.err === 'ok') setApiKeys(response.api_keys || []);
+      else setApiKeysError(response.msg || '设备密钥加载失败');
+    } catch (error) {
+      console.warn('Failed to load device API keys:', error);
+      setApiKeysError('设备密钥加载失败，请检查网络后重试');
+    } finally {
+      setApiKeysLoading(false);
+    }
+  }, [capabilities.deviceApiKeyApi, offlineMode, serverUrl, user]);
+
+  useEffect(() => {
+    void refreshApiKeys();
+  }, [refreshApiKeys]);
+
   const clearCurrentAccountCaches = async () => {
     const tasks: Promise<unknown>[] = [clearCurrentAccountMokeCache()];
     if (process.env.NEXT_PUBLIC_APP_PLATFORM === 'tauri' && serverUrl) {
@@ -131,7 +179,22 @@ export default function SettingsPage() {
     }
   };
 
+  const revokeAndClearCurrentDeviceKey = async () => {
+    if (!serverUrl) return;
+    try {
+      const stored = await loadDeviceCredential(serverUrl);
+      if (stored?.keyInfo?.id) {
+        await revokeDeviceApiKey(stored.keyInfo.id).catch((error) => {
+          console.warn('Failed to revoke current device API key:', error);
+        });
+      }
+    } finally {
+      await clearDeviceCredential(serverUrl);
+    }
+  };
+
   const handleDisconnect = async () => {
+    await revokeAndClearCurrentDeviceKey();
     await clearCurrentAccountCaches();
     disconnect();
     safeRemoveLocalStorageItem('moke-auth-token');
@@ -144,6 +207,7 @@ export default function SettingsPage() {
   };
 
   const handleLogout = async () => {
+    await revokeAndClearCurrentDeviceKey();
     if (serverUrl) {
       try {
         await request(`${serverUrl}/api/user/sign_out`, { credentials: 'include' });
@@ -155,6 +219,57 @@ export default function SettingsPage() {
     logout();
     safeRemoveLocalStorageItem('moke-auth-token');
     router.push('/login');
+  };
+
+  const handleCreateApiKey = async () => {
+    if (!apiKeyPassword.trim() || !apiKeyName.trim() || apiKeyBusy) return;
+    setApiKeyBusy(true);
+    try {
+      const response = await createDeviceApiKey(apiKeyPassword, createManualDeviceId(), apiKeyName);
+      if (response.err !== 'ok' || !response.api_key) {
+        showToast(response.msg || '设备 API Key 创建失败', 'error');
+        return;
+      }
+      setCreatedApiKey(response.api_key);
+      setApiKeyPassword('');
+      await refreshApiKeys();
+    } catch (error) {
+      console.error('Failed to create device API key:', error);
+      showToast('设备 API Key 创建失败', 'error');
+    } finally {
+      setApiKeyBusy(false);
+    }
+  };
+
+  const handleCopyCreatedApiKey = async () => {
+    if (!createdApiKey) return;
+    try {
+      await navigator.clipboard.writeText(createdApiKey);
+      showToast('API Key 已复制');
+    } catch {
+      showToast('复制失败，请手动选择并复制', 'error');
+    }
+  };
+
+  const handleRevokeApiKey = async (apiKey: DeviceApiKeyInfo) => {
+    if (apiKeyBusy || !window.confirm(`确定吊销“${apiKey.device_name || apiKey.prefix}”吗？`)) return;
+    setApiKeyBusy(true);
+    try {
+      const response = await revokeDeviceApiKey(apiKey.id);
+      if (response.err !== 'ok') {
+        showToast(response.msg || '吊销失败', 'error');
+        return;
+      }
+      const stored = await loadDeviceCredential(serverUrl);
+      if (stored?.keyInfo?.id === apiKey.id) await clearDeviceCredential(serverUrl);
+      await refreshApiKeys();
+      showToast('设备 API Key 已吊销');
+    } catch (error) {
+      console.error('Failed to revoke device API key:', error);
+      showToast('吊销失败', 'error');
+    } finally {
+      setApiKeyBusy(false);
+    }
   };
 
   const handleClearReaderCache = async () => {
@@ -256,6 +371,40 @@ export default function SettingsPage() {
                 description="查看个人数据概览与历史统计"
                 href="/user"
               />
+              {capabilities.deviceApiKeyApi && (
+                <>
+                  <ActionRow
+                    icon={Plus}
+                    label="创建设备 API Key"
+                    disabled={apiKeyBusy}
+                    onClick={() => {
+                      setApiKeyName('新设备');
+                      setApiKeyPassword('');
+                      setCreatedApiKey('');
+                      setShowCreateApiKey(true);
+                    }}
+                  />
+                  {apiKeysLoading ? (
+                    <div className="px-4 py-3.5 text-sm text-muted-foreground">正在加载设备密钥...</div>
+                  ) : apiKeysError ? (
+                    <div className="flex flex-wrap items-center gap-3 px-4 py-3.5">
+                      <p role="alert" className="text-sm text-destructive">{apiKeysError}</p>
+                      <button type="button" onClick={() => void refreshApiKeys()} className="rounded-lg border border-border px-3 py-2 text-sm text-foreground">重试</button>
+                    </div>
+                  ) : apiKeys.length > 0 ? apiKeys.map((apiKey) => (
+                    <DeviceApiKeyRow
+                      key={apiKey.id}
+                      apiKey={apiKey}
+                      disabled={apiKeyBusy}
+                      onRevoke={() => void handleRevokeApiKey(apiKey)}
+                    />
+                  )) : (
+                    <div className="px-4 py-3.5 text-xs leading-relaxed text-muted-foreground">
+                      暂无有效设备密钥。密钥只用于恢复登录会话，不能直接访问书籍或管理接口。
+                    </div>
+                  )}
+                </>
+              )}
               <ActionRow
                 icon={LogOut}
                 label="退出登录"
@@ -451,6 +600,59 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+      {showCreateApiKey && (
+          <dialog
+            ref={createApiKeyDialogRef}
+            aria-labelledby="create-api-key-title"
+            onCancel={(event) => {
+              if (apiKeyBusy) event.preventDefault();
+            }}
+            onClose={() => { setShowCreateApiKey(false); setCreatedApiKey(''); setApiKeyPassword(''); }}
+            className="eink-bordered m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md overflow-y-auto overscroll-contain rounded-2xl border border-border bg-card p-6 shadow-xl backdrop:bg-black/40"
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <KeyRound className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h2 id="create-api-key-title" className="text-base font-semibold text-foreground">创建设备 API Key</h2>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  原始密钥只显示这一次。服务端仅保存哈希，可随时从这里吊销。
+                </p>
+              </div>
+            </div>
+
+            {createdApiKey ? (
+              <div className="mt-5 space-y-4">
+                <div className="rounded-xl border border-amber-950/10 bg-muted/40 p-3">
+                  <p className="mb-2 text-xs font-medium text-foreground">请立即保存</p>
+                  <textarea aria-label="新设备 API Key" readOnly value={createdApiKey} rows={3} className="w-full resize-none break-all rounded bg-transparent font-mono text-sm leading-relaxed text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" />
+                </div>
+                <div className="flex gap-3">
+                  <button type="button" onClick={() => void handleCopyCreatedApiKey()} className="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl border border-amber-950/10 bg-white/60 text-sm font-medium text-foreground hover:bg-muted">
+                    <Copy className="h-4 w-4" />复制
+                  </button>
+                  <button type="button" onClick={() => createApiKeyDialogRef.current?.close()} className="h-10 flex-1 rounded-xl bg-primary text-sm font-medium text-primary-foreground hover:opacity-90">完成</button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={(event) => { event.preventDefault(); void handleCreateApiKey(); }} className="mt-5 space-y-4">
+                <div>
+                  <label htmlFor="api-key-device-name" className="mb-1.5 block text-sm font-medium text-foreground">设备名称</label>
+                  <input id="api-key-device-name" name="device_name" required autoFocus value={apiKeyName} onChange={(event) => setApiKeyName(event.target.value)} maxLength={200} className="h-10 w-full rounded-xl border border-amber-950/10 bg-white/60 px-3 text-[16px] sm:text-sm text-foreground outline-none focus:ring-2 focus:ring-ring" />
+                </div>
+                <div>
+                  <label htmlFor="api-key-current-password" className="mb-1.5 block text-sm font-medium text-foreground">当前密码</label>
+                  <input id="api-key-current-password" name="password" required type="password" value={apiKeyPassword} onChange={(event) => setApiKeyPassword(event.target.value)} autoComplete="current-password" className="h-10 w-full rounded-xl border border-amber-950/10 bg-white/60 px-3 text-[16px] sm:text-sm text-foreground outline-none focus:ring-2 focus:ring-ring" />
+                </div>
+                <div className="flex gap-3 pt-1">
+                  <button type="button" onClick={() => createApiKeyDialogRef.current?.close()} disabled={apiKeyBusy} className="h-10 flex-1 rounded-xl border border-amber-950/10 bg-white/60 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-60">取消</button>
+                  <button type="submit" disabled={apiKeyBusy} className="h-10 flex-1 rounded-xl bg-primary text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60">{apiKeyBusy ? '创建中' : '创建'}</button>
+                </div>
+              </form>
+            )}
+          </dialog>
+      )}
     </DesktopLayout>
   );
 }
@@ -474,6 +676,44 @@ function SettingsRow({ label, value }: { label: string; value: string }) {
       <span className="text-sm text-muted-foreground truncate text-right">{value}</span>
     </div>
   );
+}
+
+function DeviceApiKeyRow({ apiKey, disabled, onRevoke }: {
+  apiKey: DeviceApiKeyInfo;
+  disabled: boolean;
+  onRevoke: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 px-4 py-3.5 rounded-3xl transition-colors hover:bg-muted/60">
+      <div className="flex min-w-0 items-start gap-3.5">
+        <div className="shrink-0 rounded-lg border border-amber-950/10 bg-white/60 p-2 text-muted-foreground eink-bordered">
+          <KeyRound className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 py-0.5">
+          <p title={apiKey.device_name || '未命名设备'} className="truncate text-sm font-medium text-foreground">{apiKey.device_name || '未命名设备'}</p>
+          <p className="mt-0.5 break-words text-xs leading-relaxed text-muted-foreground">
+            {apiKey.prefix} · 最近使用 {formatApiKeyTime(apiKey.last_used_at)}
+          </p>
+        </div>
+      </div>
+      <button type="button" onClick={onRevoke} disabled={disabled} aria-label={`吊销 ${apiKey.device_name || apiKey.prefix}`} title="吊销设备 API Key" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-destructive transition hover:bg-destructive/10 disabled:opacity-50">
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+function formatApiKeyTime(value: string | null): string {
+  if (!value) return '从未';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '未知';
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
 }
 
 function CacheUsageRow({ icon: Icon, label, value, description }: {

@@ -114,6 +114,27 @@ function sameServer(left: string, right: string): boolean {
   }
 }
 
+async function recoverUnindexedDownload(record: OfflineBookRecord): Promise<OfflineBookRecord | null> {
+  const target = await storedOfflineFsPath(record);
+  if (!target) return null;
+  try {
+    const { stat } = await import('@tauri-apps/plugin-fs');
+    const metadata = await stat(target.operationPath, fsPathOptions(target));
+    if (!metadata.isFile || Number(metadata.size) <= 0) return null;
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('moke_record_downloaded_book', { book: {
+      id: record.id, serverUrl: record.serverUrl, bookId: record.bookId,
+      title: record.title, author: record.author, accountKey: record.accountKey, inShelf: record.inShelf,
+      fileName: record.fileName, relativePath: record.relativePath, storageRoot: record.storageRoot,
+      mimeType: record.mimeType, updatedAt: record.updatedAt,
+    } });
+    return { ...record, format: formatFromRecord(record), size: Number(metadata.size) };
+  } catch {
+    // Missing or unauthorized files must not appear as available downloads.
+    return null;
+  }
+}
+
 
 export async function listOfflineBooks(serverUrl?: string): Promise<OfflineBookRecord[]> {
   const db = await openDatabase();
@@ -129,6 +150,13 @@ export async function listOfflineBooks(serverUrl?: string): Promise<OfflineBookR
       const { invoke } = await import('@tauri-apps/api/core');
       const nativeRecords = await invoke<NativeOfflineBookRecord[]>('moke_list_downloaded_books');
       const indexedById = new Map(records.map((record) => [record.id, record]));
+      const nativeIds = new Set(nativeRecords.map((record) => record.id));
+      const restored: OfflineBookRecord[] = [];
+      for (const record of records) {
+        if (nativeIds.has(record.id)) continue;
+        const recovered = await recoverUnindexedDownload(record);
+        if (recovered) restored.push(recovered);
+      }
       records = nativeRecords.map((nativeRecord) => {
         const indexed = indexedById.get(nativeRecord.id);
         const recovered: OfflineBookRecord = {
@@ -139,6 +167,7 @@ export async function listOfflineBooks(serverUrl?: string): Promise<OfflineBookR
           format: formatFromRecord(nativeRecord),
           title: nativeRecord.title || indexed?.title || nativeRecord.fileName,
           author: nativeRecord.author || indexed?.author,
+          accountKey: nativeRecord.accountKey ?? indexed?.accountKey,
           inShelf: nativeRecord.inShelf ?? indexed?.inShelf,
           fileName: nativeRecord.fileName,
           mimeType: nativeRecord.mimeType || indexed?.mimeType || 'application/octet-stream',
@@ -151,6 +180,7 @@ export async function listOfflineBooks(serverUrl?: string): Promise<OfflineBookR
         void putOfflineBookRecord(recovered).catch(() => undefined);
         return recovered;
       });
+      records.push(...restored);
     } catch (error) {
       debugLog('warn', 'download', '读取原生离线书库失败，使用 WebView 索引', String(error));
     }
@@ -205,7 +235,7 @@ export async function getOfflineBook(
     )) ?? (indexedRecord
       ? nativeRecords.find((record) => record.fileName === indexedRecord.fileName)
       : undefined);
-    if (!nativeRecord) return null;
+    if (!nativeRecord) return indexedRecord ? recoverUnindexedDownload(indexedRecord) : null;
 
     const recovered: OfflineBookRecord = {
       ...indexedRecord,
@@ -215,6 +245,7 @@ export async function getOfflineBook(
       format: formatFromRecord(nativeRecord),
       title: nativeRecord.title || indexedRecord?.title || '',
       author: nativeRecord.author || indexedRecord?.author,
+      accountKey: nativeRecord.accountKey ?? indexedRecord?.accountKey,
       inShelf: nativeRecord.inShelf ?? indexedRecord?.inShelf,
       fileName: nativeRecord.fileName,
       mimeType: nativeRecord.mimeType || indexedRecord?.mimeType || 'application/octet-stream',

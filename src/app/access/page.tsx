@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, Suspense } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { KeyRound } from 'lucide-react';
 import { submitWelcomeCode } from '@/lib/api';
@@ -9,6 +10,7 @@ import { useServerStore } from '@/lib/store/server';
 import { CaptchaModal } from '@/components/auth/CaptchaModal';
 import { requestAnimatedBack } from '@/lib/native-back';
 import { debugLog } from '@/lib/debug-log';
+import { clearCurrentAccountMokeCache } from '@/lib/moke-cache';
 
 function AccessPageInner() {
   const router = useRouter();
@@ -104,8 +106,13 @@ function AccessPageInner() {
       const res = await submitWelcomeCode(code, captchaData);
       if (res.err === 'ok') {
         setShowCaptcha(false);
+        try {
+          await clearCurrentAccountMokeCache();
+        } catch (cacheError) {
+          console.warn('[AccessPage] failed to clear stale account cache:', cacheError);
+        }
         // 验证成功后进入书架主页，而不是 router.back()（那会退回 welcome 连接页）
-        router.push('/shelf');
+        router.replace('/shelf');
       } else if (res.err === 'captcha.invalid' || res.err === 'captcha.expired' || res.err === 'captcha.required') {
         setError(res.msg || '请输入人机验证码');
         setShowCaptcha(true);
@@ -141,14 +148,17 @@ function AccessPageInner() {
           <div className="bg-destructive/10 border border-destructive/30 text-destructive text-sm rounded-lg p-3 mb-4">{error}</div>
         )}
 
-        <form onSubmit={(e) => { e.preventDefault(); handleVerify(); }} className="flex flex-col gap-4">
+          <form onSubmit={(e) => { e.preventDefault(); handleVerify(); }} className="flex flex-col gap-4">
           <input type="text" placeholder="请输入访问码" value={code} onChange={(e) => setCode(e.target.value)}
             className="w-full h-11 px-4 rounded-2xl bg-white/65 border border-amber-950/10 shadow-sm text-foreground text-sm text-center outline-none transition-shadow duration-150 focus:ring-2 focus:ring-ring" />
           <button type="submit" disabled={loading || !code.trim()}
             className="w-full h-11 rounded-2xl bg-primary shadow-lg shadow-primary/15 text-primary-foreground text-base font-semibold cursor-pointer transition hover:opacity-90 active:opacity-80 mt-2 disabled:opacity-50">
             {loading ? '验证中...' : '确认'}
           </button>
-        </form>
+          </form>
+          <p className="mt-6 text-center text-sm text-muted-foreground">
+            已有账号？ <Link href="/login" className="font-medium text-primary hover:underline">使用账号或 API Key 登录</Link>
+          </p>
         </div>
       </div>
       <CaptchaModal

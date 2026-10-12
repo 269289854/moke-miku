@@ -200,6 +200,7 @@
     "allow-localsend-cancel-receive",
     "allow-localsend-send-files",
     "allow-localsend-cancel-send",
-    "allow-ext-reader-event"
+    "allow-ext-reader-event",
+    "allow-moke-trim-reader-cache"
   ]
 }

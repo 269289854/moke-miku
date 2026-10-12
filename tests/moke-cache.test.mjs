@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   cachedRequest,
   clearMokeCache,
+  clearCurrentAccountMokeCache,
   getMokeCacheStats,
   invalidateMokeCacheTags,
   isStaleFallbackStatus,
@@ -850,6 +851,54 @@ test('限额检查 scheduleCacheLimitEnforcement 尾部节流，写入后不立�
 
   // 写入后立即检查：因为 10 秒尾部节流，enforceCacheLimit 不应立即扫描 keys
   assert.equal(keysCalls, 0, '限额检查已节流，写入后不应立即执行 keys 扫描');
+});
+
+test('session change prevents old background updates and new requests joining them', async () => {
+  let now = 10_000;
+  Date.now = () => now;
+  const url = 'https://books.test/api/library';
+  await cachedRequest(url, policy(), async () => new Response('old'));
+  now += 2_000;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const updates = [];
+  const stale = await cachedRequest(url, policy(), async () => {
+    await gate;
+    return new Response('old-account-update');
+  }, { revalidateBudgetMs: 0, onBackgroundUpdate: (response) => updates.push(response) });
+  assert.equal(await stale.text(), 'old');
+  await clearCurrentAccountMokeCache(policy().scope);
+  const fresh = await cachedRequest(url, policy(), async () => new Response('new-account'));
+  assert.equal(await fresh.text(), 'new-account');
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(updates.length, 0);
+  const retained = await cachedRequest(url, policy(), async () => { throw new Error('unexpected'); });
+  assert.equal(await retained.text(), 'new-account');
+});
+
+test('authentication error during background refresh is neither cached nor delivered', async () => {
+  let now = 10_000;
+  Date.now = () => now;
+  const url = 'https://books.test/api/library';
+  await cachedRequest(url, policy(), async () => new Response('old'));
+  now += 2_000;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const updates = [];
+  await cachedRequest(url, policy(), async () => {
+    await gate;
+    return new Response('{"err":"user.need_login"}');
+  }, {
+    revalidateBudgetMs: 0,
+    shouldStore: async () => false,
+    onBackgroundUpdate: (response) => updates.push(response),
+  });
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(updates.length, 0);
+  const response = await cachedRequest(url, policy(), async () => new Response('recovered'));
+  assert.equal(await response.text(), 'recovered');
 });
 
 

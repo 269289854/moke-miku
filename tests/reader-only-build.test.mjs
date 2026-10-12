@@ -36,6 +36,12 @@ const readerDirScanner = readFileSync(
 const readerCapability = JSON.parse(
   readFileSync(new URL('../src-tauri/capabilities/reader.json', import.meta.url), 'utf8'),
 );
+const defaultCapability = JSON.parse(
+  readFileSync(new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8'),
+);
+const ohosCapability = JSON.parse(
+  readFileSync(new URL('../src-tauri/capabilities/ohos.json', import.meta.url), 'utf8'),
+);
 
 function appAclCommands(source) {
   const block = source.match(/const APP_ACL_COMMANDS:.*?= &\[([\s\S]*?)\n\];/)?.[1];
@@ -67,6 +73,12 @@ function readerHandlerCommands(source) {
     .map((match) => match[1].split('::').pop());
 }
 
+function mokeHandlerCommands(source) {
+  const block = bracketedMacroBody(source, 'fn moke_invoke_handler', 'tauri::generate_handler!');
+  return [...block.matchAll(/^\s*(moke_[a-z0-9_]+)\s*,\s*$/gim)]
+    .map((match) => match[1]);
+}
+
 test('Moke 构建只暴露独立 Readest Reader 页面', () => {
   assert.match(gitmodules, /https:\/\/github\.com\/269289854\/readest-reader\.git/);
   assert.equal(contract.id, 'moke.readest.embed.v1');
@@ -83,6 +95,8 @@ test('Moke 构建只暴露独立 Readest Reader 页面', () => {
   assert.match(tauriBuild, /AppManifest::new\(\)\.commands\(APP_ACL_COMMANDS\)/);
   assert.ok(readerCapability.permissions.includes('allow-get-executable-dir'));
   assert.ok(readerCapability.permissions.includes('allow-ext-reader-event'));
+  assert.ok(defaultCapability.permissions.includes('allow-moke-runtime-platform'));
+  assert.ok(ohosCapability.permissions.includes('allow-moke-runtime-platform'));
   assert.match(readme, /git submodule sync --recursive/);
   assert.match(tauriManifest, /reader-e2e = \["tauri-plugin-webdriver"\]/);
   assert.match(tauriManifest, /tauri-plugin-webdriver = \{ version = "=0\.2\.1", optional = true \}/);
@@ -98,8 +112,26 @@ test('Moke 构建只暴露独立 Readest Reader 页面', () => {
 });
 
 test('Moke ACL command manifest stays aligned with the merged readestlib handler', () => {
-  const expected = [...new Set([...readerHandlerCommands(readerNativeHost), 'ext_reader_event'])].sort();
+  const expected = [...new Set([
+    ...readerHandlerCommands(readerNativeHost),
+    ...mokeHandlerCommands(tauriHost),
+    'ext_reader_event',
+  ])].sort();
   assert.deepEqual([...new Set(appAclCommands(tauriBuild))].sort(), expected);
+});
+
+test('Moke download and cache commands receive explicit host grants after Reader merges', () => {
+  for (const command of mokeHandlerCommands(tauriHost)) {
+    const permission = `allow-${command.replaceAll('_', '-')}`;
+    assert.ok(appAclCommands(tauriBuild).includes(command), `${command} must have an ACL manifest`);
+    assert.ok(ohosCapability.permissions.includes(permission), `${permission} must work on OHOS`);
+    if (command === 'moke_trim_reader_cache') {
+      assert.ok(readerCapability.permissions.includes(permission));
+    } else {
+      assert.ok(defaultCapability.permissions.includes(permission), `${permission} must work in Moke`);
+      assert.ok(!readerCapability.permissions.includes(permission), `${permission} stays host-owned`);
+    }
+  }
 });
 
 test('embedded Reader preserves the untrusted-publication filesystem boundary', () => {

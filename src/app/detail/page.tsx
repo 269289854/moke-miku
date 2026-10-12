@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { ArrowLeft, ChevronRight, Star, FileText, HardDrive, Calendar, BookOpen, Building2, Barcode, Tags, Users, LibraryBig, FileBadge2, Bookmark, Trash2 } from 'lucide-react';
 import { requestAnimatedBack } from '@/lib/native-back';
 import { DesktopLayout } from '@/components/layout/DesktopLayout';
-import { getErrorMessage, invalidateBookReadCaches, MokeApiError, readApiJson, request, requestCachedJson } from '@/lib/api';
+import { getErrorMessage, invalidateBookReadCaches, readApiJson, request, requestCachedJson } from '@/lib/api';
 import { deleteOfflineBook, getOfflineBook, listOfflineBooks, removeOfflinePartial, setOfflineBookShelfState, type OfflineBookRecord } from '@/lib/offline-books';
 import {
   beginOfflineDownload,
@@ -25,7 +25,14 @@ import {
   readStateShelfState,
   shouldLoadReadingStateFallback,
 } from '@/lib/book-detail-core';
-import { openAndRecordBookRead, recordBookRead, READ_RECORD_NAV_TIMEOUT_MS } from '@/lib/book-read';
+import {
+  bookReadAuthenticationDestination,
+  openAndRecordBookRead,
+  recordBookRead,
+  recordBookReadBeforeNavigation,
+  READ_RECORD_NAV_TIMEOUT_MS,
+  type BookReadAuthenticationDestination,
+} from '@/lib/book-read';
 import {
   getOfflineDownloadSnapshot,
   removeOfflineDownloadSnapshot,
@@ -50,9 +57,8 @@ import {
   type MokeBookSource,
 } from '@/lib/moke-book-source';
 import { useToast } from '@/lib/toast';
-import { readMokeCacheState } from '@/lib/moke-cache';
+import { readMokeCacheState, clearCurrentAccountMokeCache } from '@/lib/moke-cache';
 import { notifyStaleContent } from '@/lib/stale-notice';
-
 
 interface BookDetail {
   id: string;
@@ -127,6 +133,18 @@ function DetailContent() {
   const fileFormats = bookFiles.map((file) => file.format.toUpperCase());
   const ratingValue = typeof book?.rating === 'number' ? book.rating : book?.rating?.value;
   const handleAnnotationAuthRequired = useCallback(() => router.push('/login'), [router]);
+  const recoverBookAuthentication = useCallback(async (
+    destination: BookReadAuthenticationDestination,
+  ) => {
+    const effectiveDestination = user ? '/login' : destination;
+    try {
+      await clearCurrentAccountMokeCache();
+    } catch (error) {
+      console.warn('Failed to clear stale account cache during authentication recovery:', error);
+    }
+    if (effectiveDestination === '/login') useServerStore.getState().logout();
+    router.replace(effectiveDestination);
+  }, [router, user]);
 
   useEffect(() => {
     if (!id) return;
@@ -205,13 +223,12 @@ function DetailContent() {
         const data = await readApiJson<{ err?: string; msg?: string; book?: BookDetail; data?: BookDetail }>(
           response,
           '书籍详情解析失败。',
-          ['ok', 'user.need_login'],
+          ['ok', 'user.need_login', 'not_invited'],
         );
         if (controller.signal.aborted || seq !== loadBookSeqRef.current) return;
-        if (data.err === 'user.need_login') {
-          if (!isBackground) {
-            router.push('/login');
-          }
+        const authenticationDestination = bookReadAuthenticationDestination({ code: data.err });
+        if (authenticationDestination) {
+          await recoverBookAuthentication(authenticationDestination);
           return;
         }
         const nextBook = data.book || data.data;
@@ -263,8 +280,9 @@ function DetailContent() {
     } catch (error) {
       if (controller.signal.aborted || seq !== loadBookSeqRef.current) return;
       setBook(null);
-      if (error instanceof MokeApiError && error.code === 'user.need_login') {
-        router.push('/login');
+      const authenticationDestination = bookReadAuthenticationDestination(error);
+      if (authenticationDestination) {
+        await recoverBookAuthentication(authenticationDestination);
         return;
       }
       setMessage(getErrorMessage(error, '书籍详情加载失败，请检查服务器连接。'));
@@ -569,11 +587,28 @@ function DetailContent() {
         };
       }
 
+      if (!record?.filePath) {
+        const canOpenRemoteBook = await recordBookReadBeforeNavigation({
+          record: () => recordOpenedBook(true, READ_RECORD_NAV_TIMEOUT_MS),
+          onAuthenticationRequired: (destination) => recoverBookAuthentication(destination),
+          onRecordError: (error) => {
+            console.warn('Read state could not be saved before opening the remote reader:', error);
+            setMessage('在线阅读已继续打开，但阅读记录同步失败。');
+          },
+        });
+        if (!canOpenRemoteBook) {
+          if (annotationNavigationId) clearAnnotationLocateProgressSuppression(annotationNavigationId);
+          return;
+        }
+      }
+
       if (isSingleWebviewRuntime(currentPlatform)) {
-        try {
-          await recordOpenedBook(!record?.filePath, READ_RECORD_NAV_TIMEOUT_MS);
-        } catch (error) {
-          console.warn('Read state could not be saved before navigation:', error);
+        if (record?.filePath) {
+          try {
+            await recordOpenedBook(false, READ_RECORD_NAV_TIMEOUT_MS);
+          } catch (error) {
+            console.warn('Local read state could not be saved before navigation:', error);
+          }
         }
         const href = buildEmbeddedReaderUrl({
           filePath: record?.filePath,
@@ -602,13 +637,19 @@ function DetailContent() {
         });
       };
 
+      if (!record?.filePath) {
+        await openReader();
+        setOpeningReader(false);
+        return;
+      }
+
       await openAndRecordBookRead({
         open: openReader,
         // The independent reader window is already usable. Release the
         // visible loading state now, while openingReaderRef continues to
         // block duplicate opens until the record request settles.
         onOpened: () => setOpeningReader(false),
-        record: () => recordOpenedBook(!record?.filePath),
+        record: () => recordOpenedBook(false),
         onRecordError: (error) => {
           console.warn('Reader opened, but the read record could not be saved:', error);
           setMessage('书籍已打开，但阅读记录同步失败。');

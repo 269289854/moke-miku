@@ -185,6 +185,20 @@ test('main window does not inherit reader-only plugins', () => {
   }
 });
 
+test('main window grants only the native secure-item commands needed for device login', () => {
+  const main = readCapability('src-tauri/capabilities/default.json');
+  const nativeBridgePermissions = main.permissions
+    .map(permissionIdentifier)
+    .filter(identifier => identifier.startsWith('native-bridge:'))
+    .sort();
+
+  assert.deepEqual(nativeBridgePermissions, [
+    'native-bridge:allow-clear-secure-item',
+    'native-bridge:allow-get-secure-item',
+    'native-bridge:allow-set-secure-item',
+  ]);
+});
+
 test('main window native response cache is confined to its private cache subtree', () => {
   const main = readCapability('src-tauri/capabilities/default.json');
   const expectedRoot = '$APPCACHE/moke-http-cache';

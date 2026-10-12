@@ -51,6 +51,17 @@ test('Android 非根页返回键交给 Next 路由且不覆盖阅读器拦截', 
   assert.match(activitySource, /isEmbeddedReaderRoute\(\)/);
 });
 
+test('跨文档离开阅读器后残留的按键拦截不阻止应用返回或退出', () => {
+  assert.match(
+    activitySource,
+    /private fun shouldIntercept\(keyCode: Int\): Boolean \{[\s\S]*?if \(!isEmbeddedReaderRoute\(\)\) return false/,
+  );
+  assert.match(
+    activitySource,
+    /event\.keyCode == KeyEvent\.KEYCODE_BACK &&\s*\(!isEmbeddedReaderRoute\(\) \|\| !interceptBackKeyEnabled\)/,
+  );
+});
+
 test('Android 分屏时通过原生窗口状态移除重复的顶部安全区', () => {
   assert.match(activitySource, /@JavascriptInterface/);
   assert.match(activitySource, /WeakReference<MainActivity>/);

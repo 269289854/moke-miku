@@ -617,6 +617,9 @@ async function executeNetwork(
     const response = await transport(conditionalHeaders, entry.controller.signal);
 
     if (response.status === 304 && cached) {
+      if (requestEpoch !== cacheEpoch) {
+        throw new DOMException('Cache scope changed.', 'AbortError');
+      }
       await putResponse(key, cached.clone(), policy, requestEpoch);
       if (!entry.isBackground) {
         entry.resolveForeground({ response: cached.clone(), state: 'revalidated' });
@@ -625,7 +628,7 @@ async function executeNetwork(
     }
 
     const now = Date.now();
-    const hasStale = Boolean(cached && entry.staleUntil > now);
+    const hasStale = requestEpoch === cacheEpoch && Boolean(cached && entry.staleUntil > now);
     if (isStaleFallbackStatus(response.status) && hasStale && entry.staleResponse) {
       await drainResponseBodyQuietly(response);
       if (!entry.isBackground) {
@@ -650,7 +653,7 @@ async function executeNetwork(
       if (!entry.isBackground) {
         entry.resolveForeground({ response: response.clone(), state: 'network' });
       } else {
-        if (response.status === 200) {
+        if (response.status === 200 && allowStore && requestEpoch === cacheEpoch) {
           for (const listener of entry.backgroundListeners) {
             try {
               listener(buildResponseWithState(response, 'network'));
@@ -666,7 +669,7 @@ async function executeNetwork(
     }
   } catch (error) {
     const now = Date.now();
-    const hasStale = Boolean(cached && entry.staleUntil > now);
+    const hasStale = requestEpoch === cacheEpoch && Boolean(cached && entry.staleUntil > now);
     if (hasStale && entry.staleResponse) {
       if (!entry.isBackground) {
         entry.resolveForeground({ response: entry.staleResponse.clone(), state: 'stale' });
@@ -915,6 +918,8 @@ export async function invalidateMokeCacheTags(scope: string, tags: string[]): Pr
 
 export async function clearCurrentAccountMokeCache(scopeOverride?: string): Promise<void> {
   cacheEpoch++;
+  // New account requests must not join a refresh from the previous session.
+  inFlightRequests.clear();
   const scope = scopeOverride ?? await getMokeCacheScope();
   const marker = scopedTag(scope, 'account');
   if (isNativeCacheEnabled()) {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-moke-get-reader-cache-stats"
+description = "Enables the moke_get_reader_cache_stats command without any pre-configured scope."
+commands.allow = ["moke_get_reader_cache_stats"]
+
+[[permission]]
+identifier = "deny-moke-get-reader-cache-stats"
+description = "Denies the moke_get_reader_cache_stats command without any pre-configured scope."
+commands.deny = ["moke_get_reader_cache_stats"]

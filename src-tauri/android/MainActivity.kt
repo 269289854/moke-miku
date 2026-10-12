@@ -196,6 +196,10 @@ class MainActivity : TauriActivity(), KeyDownInterceptor {
 
     // 判断某个按键当前是否应被本 Activity 拦截（与按键方向无关）。
     private fun shouldIntercept(keyCode: Int): Boolean {
+        // A full-document Reader exit can skip React cleanup in the old page.
+        // Ignore its retained interception flags once Moke is active again.
+        if (!isEmbeddedReaderRoute()) return false
+
         // Learn mode: forward and consume every key except BACK so the settings
         // UI can capture whatever the remote sends. BACK stays excluded to match
         // the reader: PageTurnerSettings explicitly does not allow binding Back
@@ -220,7 +224,8 @@ class MainActivity : TauriActivity(), KeyDownInterceptor {
                 // The embedded reader owns BACK while its interception flag is
                 // enabled. Everywhere else, keep root-page exit behavior
                 // native and route nested pages through Next's client router.
-                if (event.keyCode == KeyEvent.KEYCODE_BACK && !interceptBackKeyEnabled) {
+                if (event.keyCode == KeyEvent.KEYCODE_BACK &&
+                    (!isEmbeddedReaderRoute() || !interceptBackKeyEnabled)) {
                     if (event.repeatCount > 0) return true
                     // Android uses an in-place Readest WebView. During its
                     // startup there is a short interval before Readest enables

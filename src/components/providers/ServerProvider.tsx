@@ -2,12 +2,23 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { fetchCurrentUser, fetchServerInfo, checkWelcomeRequirement, discoverServerCapabilities } from '@/lib/api';
+import {
+  fetchCurrentUser,
+  fetchServerInfo,
+  checkWelcomeRequirement,
+  discoverServerCapabilities,
+  restoreSessionFromStoredApiKey,
+} from '@/lib/api';
 import { useServerStore } from '@/lib/store/server';
 import { getServerDiscoveryInputs } from '@/lib/server-capabilities';
 import { navigateFullDocument } from '@/lib/moke-reader';
 import { isServerCapabilitiesFresh, resolveUserAfterSync } from '@/lib/server-session';
 import { getNetworkQuality, subscribeNetworkRecovery } from '@/lib/network-health';
+import {
+  authenticationFallbackDestination,
+  MOKE_AUTH_REQUIRED_EVENT,
+} from '@/lib/device-auth';
+import { clearCurrentAccountMokeCache } from '@/lib/moke-cache';
 
 const PUBLIC_PATHS = ['/welcome', '/login', '/register', '/access', '/privacy', '/settings/developer'];
 const SYNC_FAILURE_BACKOFF_MS = 60_000;
@@ -32,6 +43,23 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
       setRecoveryTick((t) => t + 1);
     });
   }, [discoveryServerUrl]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleAuthenticationRequired = (event: Event) => {
+      if (PUBLIC_PATHS.includes(pathname) || isExtensionPath || isEmbeddedReaderPath) return;
+      const destination = (event as CustomEvent<{ destination?: '/login' | '/access' }>).detail?.destination;
+      if (destination !== '/login' && destination !== '/access') return;
+      void clearCurrentAccountMokeCache().catch((error) => {
+        console.warn('[ServerProvider] failed to clear stale authentication cache:', error);
+      }).finally(() => {
+        if (destination === '/login') useServerStore.getState().logout();
+        router.replace(destination);
+      });
+    };
+    window.addEventListener(MOKE_AUTH_REQUIRED_EVENT, handleAuthenticationRequired);
+    return () => window.removeEventListener(MOKE_AUTH_REQUIRED_EVENT, handleAuthenticationRequired);
+  }, [isEmbeddedReaderPath, isExtensionPath, pathname, router]);
 
   useEffect(() => {
     if (!hasHydrated) return;
@@ -70,11 +98,24 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
           lastSyncFailureAtByServer.set(discoveryServerUrl, Date.now());
           return;
         }
-        if (!cancelled && welcome.needsAccessCode) {
-          lastSyncFailureAtByServer.delete(discoveryServerUrl);
-          console.log('[ServerProvider] needs access code, redirecting to /access');
-          router.replace('/access');
-          return;
+        if (cancelled) return;
+        const currentCapabilities = useServerStore.getState().capabilities;
+        setServerCapabilities({
+          ...currentCapabilities,
+          passwordLoginApi: welcome.passwordLoginApi,
+          deviceApiKeyApi: welcome.deviceApiKeyApi,
+        });
+        if (welcome.needsAccessCode) {
+          const recovery = welcome.deviceApiKeyApi
+            ? await restoreSessionFromStoredApiKey(discoveryServerUrl)
+            : 'no_key';
+          if (cancelled) return;
+          if (recovery !== 'recovered') {
+            const destination = authenticationFallbackDestination(Boolean(userAtSyncStart));
+            console.log(`[ServerProvider] authentication required, redirecting to ${destination}`);
+            router.replace(destination);
+            return;
+          }
         }
 
         const [userResult, serverResult, capabilitiesResult] = await Promise.allSettled([
@@ -121,11 +162,13 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
           // Global discovery intentionally does not download annotation data.
           // Commit the matching user first so a real session transition clears
           // the panel-owned result, then preserve that post-transition state.
-          const currentCapabilities = useServerStore.getState().capabilities;
+          const latestCapabilities = useServerStore.getState().capabilities;
           setServerCapabilities({
             ...capabilitiesResult.value,
-            annotationApiStatus: currentCapabilities.annotationApiStatus,
-            annotationApiCheckedAt: currentCapabilities.annotationApiCheckedAt,
+            passwordLoginApi: welcome.passwordLoginApi,
+            deviceApiKeyApi: welcome.deviceApiKeyApi,
+            annotationApiStatus: latestCapabilities.annotationApiStatus,
+            annotationApiCheckedAt: latestCapabilities.annotationApiCheckedAt,
           });
         } else if (capabilitiesResult.status === 'rejected') {
           console.warn('[ServerProvider] capabilities sync failed:', capabilitiesResult.reason);

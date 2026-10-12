@@ -25,7 +25,7 @@ test('持久化能力迁移剥离 legacy annotationApi 键', () => {
   );
 });
 
-test('legacy annotationApi false 迁移为可重探的 unchecked', () => {
+test('缺少设备认证能力的旧持久化数据强制重探', () => {
   const migrated = mergePersistedServerCapabilities(DEFAULT_SERVER_CAPABILITIES, {
     annotationApi: false,
     checkedAt: 12_345,
@@ -33,6 +33,20 @@ test('legacy annotationApi false 迁移为可重探的 unchecked', () => {
 
   assert.equal(migrated.annotationApiStatus, 'unchecked');
   assert.equal(migrated.annotationApiCheckedAt, null);
+  assert.equal(migrated.checkedAt, null);
+});
+
+test('包含设备认证能力的当前持久化数据保留通用探测时间', () => {
+  const migrated = mergePersistedServerCapabilities(DEFAULT_SERVER_CAPABILITIES, {
+    annotationApiStatus: 'supported',
+    annotationApiCheckedAt: 12_000,
+    passwordLoginApi: true,
+    deviceApiKeyApi: true,
+    checkedAt: 12_345,
+  });
+
+  assert.equal(migrated.passwordLoginApi, true);
+  assert.equal(migrated.deviceApiKeyApi, true);
   assert.equal(migrated.checkedAt, 12_345);
 });
 

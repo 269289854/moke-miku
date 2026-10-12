@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  bookReadAuthenticationDestination,
   openAndRecordBookRead,
   prepareEmbeddedBookOpen,
   recordBookRead,
+  recordBookReadBeforeNavigation,
 } from '../src/lib/book-read.ts';
 
 function deferred() {
@@ -194,7 +196,7 @@ test('桌面阅读器打开后立即释放 UI 状态再同步记录', async () =
 test('会话失效被重定向到登录页时不误报记录成功', async () => {
   await assert.rejects(
     recordBookRead(async () => fakeResponse({ url: 'https://books.example/login' }), 'https://books.example', 'a'),
-    /book\.read_record\.redirect/,
+    /book\.read_record\.redirect\.user\.need_login/,
   );
 });
 
@@ -283,6 +285,61 @@ test('HTTP 200 的 JSON API 错误不会误报记录成功', async () => {
     ),
     /book\.read_record\.api\.user\.need_login/,
   );
+});
+
+test('阅读记录认证错误能区分访问码失效和登录失效', () => {
+  assert.equal(
+    bookReadAuthenticationDestination(new Error('book.read_record.api.not_invited')),
+    '/access',
+  );
+  assert.equal(
+    bookReadAuthenticationDestination({ code: 'user.need_login' }),
+    '/login',
+  );
+  assert.equal(
+    bookReadAuthenticationDestination(new Error('book.read_record.http.401')),
+    '/login',
+  );
+  assert.equal(
+    bookReadAuthenticationDestination(new Error('book.read_record.redirect.not_invited')),
+    '/access',
+  );
+  assert.equal(
+    bookReadAuthenticationDestination(new Error('book.read_record.redirect.user.need_login')),
+    '/login',
+  );
+  assert.equal(
+    bookReadAuthenticationDestination(new Error('book.read_record.http.503')),
+    null,
+  );
+});
+
+test('移动端在线阅读遇到认证失效时停止导航并进入恢复页面', async () => {
+  const events = [];
+  const canNavigate = await recordBookReadBeforeNavigation({
+    record: async () => { throw new Error('book.read_record.api.not_invited'); },
+    onAuthenticationRequired: (destination) => events.push(`recover:${destination}`),
+    onRecordError: () => events.push('best-effort-error'),
+  });
+
+  if (canNavigate) events.push('navigate-reader');
+
+  assert.equal(canNavigate, false);
+  assert.deepEqual(events, ['recover:/access']);
+});
+
+test('移动端在线阅读遇到普通同步失败时仍允许导航', async () => {
+  const events = [];
+  const canNavigate = await recordBookReadBeforeNavigation({
+    record: async () => { throw new Error('network failed'); },
+    onAuthenticationRequired: (destination) => events.push(`recover:${destination}`),
+    onRecordError: () => events.push('best-effort-error'),
+  });
+
+  if (canNavigate) events.push('navigate-reader');
+
+  assert.equal(canNavigate, true);
+  assert.deepEqual(events, ['best-effort-error', 'navigate-reader']);
 });
 
 test('服务端错误码只允许有限长度的安全字符', async () => {
