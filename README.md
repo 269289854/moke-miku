@@ -1,77 +1,134 @@
 # Moke
 
-**Moke** 是 [Talebook](https://github.com/talebook/talebook) 自托管电子书服务器的桌面客户端。在电脑上浏览、搜索、下载你的电子书库，内嵌专业阅读器，离线也能随时打开阅读。
+[![Release](https://img.shields.io/github/v/release/269289854/moke-miku)](https://github.com/269289854/moke-miku/releases/latest)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
-## 功能
+把自己搭的 [Talebook](https://github.com/talebook/talebook) 书库装进口袋。Moke 连接你的 Talebook 服务器，在电脑、手机和鸿蒙设备上统一完成找书、下书和读书；网络不好甚至断网时，已经缓存或下载过的书照样能打开。
 
-- **书库浏览** — 按分类、标签、作者、出版商等方式浏览服务器上的电子书
-- **元数据搜索** — 快速检索书名、作者、简介等元数据
-- **离线下载** — 将书籍下载到本地，断网也能阅读
-- **专业阅读** — 内嵌 readest 阅读器，支持 EPUB、PDF 等多种格式
-- **局域网友好** — 支持自签名证书和纯 HTTP 局域网服务器
-- **完整认证** — 支持访问码、登录、注册等 Talebook 服务器的全部认证方式
+## 亮点
 
-## 安装
+**找书**
+- 按分类、标签、作者、出版社浏览整个书库，长列表滚动加载
+- 按书名、作者、简介检索
 
-从 [Releases](../../releases) 页面下载对应平台的安装包：
+**读书**
+- 内置基于 Readest 的阅读器，EPUB、PDF 等常见格式开箱即读
+- 在线阅读时自动缓存内容，再次打开不用重新下载
+- 墨水屏模式：高对比度黑白界面，去掉阴影和半透明效果，适合电纸书设备
 
-| 平台 | 安装包格式 |
-|---|---|
-| Windows | `.msi` / `.exe` |
-| macOS | `.dmg` |
-| Linux | `.AppImage` / `.deb` |
-| Android | `.apk` |
-| iOS/iPadOS | `.ipa`（自签名安装，需将设备 UDID 加入开发者描述文件） |
-| OpenHarmony（鸿蒙） | `.hap`（alpha，未签名，可能需要自签名安装） |
+**离线与弱网**
+- 书籍可以下载到本地，下载目录可以自定义，支持断点续传和失败自动重试
+- 网络慢时先显示缓存内容，再在后台悄悄刷新
+- 封面优先加载缩略图，按需懒加载
+- 在设置里查看和清理阅读器缓存，不会影响已下载的书、笔记和阅读进度
 
-> **系统要求**：Windows 10 1809+ / macOS 11+ / Linux（glibc 2.31+）/ Android 8+ / iOS/iPadOS 17+ / HarmonyOS NEXT 5.0+（API 12）
+**账号与连接**
+- 支持 Talebook 的访问码、登录、注册
+- “记住此设备”：用设备密钥免密登录，并可以在设置里随时吊销
+- 兼容局域网里的纯 HTTP 地址和自签名证书
 
-## 使用
+**更新**
+- 桌面端内置自动更新，安装包签名校验通过后才会安装
+- 移动端暂不支持应用内更新，可以在设置里一键复制下载页链接，到浏览器中下载新版
 
-1. 启动 Moke，输入你的 Talebook 服务器地址（例如 `http://192.168.1.100:8080` 或 `https://mytalebook.example.com`）
-2. 根据服务器设置，输入访问码或登录账号
-3. 开始浏览、搜索、下载和阅读
+## 下载
 
-下载的书籍存储在本地，在书架页面可以离线打开阅读。
+前往 [Releases](https://github.com/269289854/moke-miku/releases/latest) 下载最新版本：
 
-## Reader 开发与构建
+| 平台 | 文件 | 备注 |
+|---|---|---|
+| Windows 10 1809+ | `.exe` / `.msi` | 推荐 `.exe`，支持自动更新 |
+| macOS 11+（Apple 芯片） | `.dmg` | 支持自动更新 |
+| Linux（glibc 2.31+） | `.AppImage` / `.deb` / `.rpm` | `.AppImage` 支持自动更新 |
+| Android 8+ | `moke-android-release.apk` | 每个版本签名一致，可直接覆盖安装 |
+| HarmonyOS NEXT 5.0+（API 12） | `entry-default-unsigned.hap` | alpha 测试版，未签名，需要自行签名安装 |
 
-Reader 是独立递归子模块。全新检出或从旧 Readest 子模块迁移后执行：
+暂不提供 iOS 安装包。
+
+## 三步开始
+
+1. 打开 Moke，填入你的 Talebook 服务器地址，例如 `http://192.168.1.100:8080`
+2. 按服务器要求输入访问码，或者登录账号
+3. 在书库里挑一本书，在线读，或者下载后离线读
+
+## 从源码构建
+
+### 环境
+
+- Node.js 20.9 或更高
+- pnpm 9.15.9（项目已在 `package.json` 中锁定，可用 `corepack install --global pnpm@9.15.9` 安装）
+- Rust stable 工具链
+- 各平台的 Tauri 系统依赖，参见 [Tauri 官方文档](https://v2.tauri.app/start/prerequisites/)
+
+### 拉取代码
+
+阅读器和部分 Tauri 组件以 git 子模块的形式引入，克隆时需要一并拉取：
 
 ```bash
-git submodule sync --recursive
-git submodule update --init --recursive
-pnpm install --frozen-lockfile
-cd readest && pnpm install --frozen-lockfile && cd ..
-pnpm build:reader
+git clone --recursive https://github.com/269289854/moke-miku.git
+cd moke-miku
+pnpm install
+cd readest && pnpm install && pnpm setup:vendors && cd ..
 ```
 
-`pnpm build:reader` 会自动执行 Reader app 的 `setup-vendors` 子脚本，生成 PDF.js、SimpleCC 和 Jieba 资源；只启动开发服务器时可先在 `readest/` 执行根脚本 `pnpm setup:vendors`（它会转调上述 app 子脚本）。`.env.moke-reader` 已随 Reader 仓库提交，无需本地创建。产物位于 `readest/out/readest`，Moke 打包时复制到 `/readest`。开发服务器通过 `pnpm dev:reader` 启动在 `http://localhost:3001/readest/reader`。协议、鉴权、错误和版本兼容说明见子模块的 `docs/MOKE_CONTRACT.md`；`mokeServerUrl` 始终是用户配置的 Talebook 地址，不是 Reader 服务地址。
+`pnpm setup:vendors` 会生成阅读器所需的 PDF.js、SimpleCC、Jieba 资源。之后每次更新子模块，都需要重新执行一次。
 
-真实桌面联调可使用 `pnpm tauri:reader-e2e` 启用仅绑定 `127.0.0.1` 的可选 WebDriver 插件。`reader-e2e` 与 release profile 同时启用会编译失败，不能进入发布产物。经过脱敏的环境、命令轮廓与实测结果见子模块的 `docs/E2E_EVIDENCE.md`。
+### 常用命令
 
-Reader 原生命令仅授予顶层 Reader UI；书稿必须保持在 Foliate 的 sandbox iframe 内，不能接触顶层 Tauri IPC bridge。桌面 `allow_paths_in_scopes` 只能复用宿主已授权的 `fs_scope`，Moke 的 `open_reader` 也只为 AppData 书籍或文件选择器已授权路径扩展 scope。升级 Foliate、Reader 命令或 capability 时必须保留这些边界并运行 `tests/reader-only-build.test.mjs`。
+| 命令 | 作用 |
+|---|---|
+| `pnpm tauri dev` | 启动完整的桌面应用（首次需要编译 Rust，较慢） |
+| `pnpm dev` | 只启动前端开发服务器（端口 3000） |
+| `pnpm dev:reader` | 启动阅读器开发服务器（`http://localhost:3001/readest/reader`） |
+| `pnpm tauri build` | 构建当前平台的安装包 |
+| `pnpm test` | 运行测试 |
+| `pnpm typecheck` | TypeScript 类型检查 |
+| `pnpm lint` | 代码检查 |
 
-## 相关链接
+### 目录速览
 
-- [Talebook 服务器](https://github.com/talebook/talebook) — 自托管电子书服务端，Moke 的数据来源
-- [readest-reader](https://github.com/hehetoshang/readest-reader) — 从 Readest 抽离、按 `moke.readest.embed.v1` 契约集成的专业阅读器
-- [报告 Bug](../../issues) — 发现 Bug？请告诉我们
-- [参与贡献](CONTRIBUTING.md) — 开发者贡献指南
+```text
+src/                 Next.js 前端：页面、组件、API 封装、状态管理
+src-tauri/           Tauri 宿主（Rust），负责窗口、权限和原生能力
+readest/             阅读器子模块，单独构建后打包进 /readest
+vendor/              Tauri、wry 等依赖的定制版子模块
+scripts/             构建与发布用的辅助脚本
+tests/               Node 内置测试运行器的测试用例
+.github/workflows/   多平台构建与发布流水线
+```
 
-## 开发者
+### 阅读器的安全边界
 
-- **yizhimeng** — Moke 客户端开发
+书籍内容属于不可信输入，只能在 Foliate 的沙箱 iframe 里渲染，不能接触顶层的 Tauri IPC。阅读器的原生命令只授权给顶层阅读器界面；打开本地文件时，只为应用数据目录里的书或用户通过文件选择器选中的路径放开访问范围。修改阅读器命令、权限配置或升级 Foliate 时，请保持这些限制，并运行 `tests/reader-only-build.test.mjs`。
+
+## 发布流程
+
+推送 `v*` 格式的 tag 后，GitHub Actions 会构建全部平台、上传安装包，并生成桌面端自动更新所需的 `latest.json`。仓库需要先在 Secrets 中配置以下签名信息：
+
+| Secret | 用途 |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 桌面端更新包签名 |
+| `ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` | Android APK 签名 |
+
+普通的推送和 PR 在缺少签名信息时也能构建成功，只是会跳过签名；打 tag 发布时则必须配置齐全。
+
+## 反馈
+
+- 问题和建议：[GitHub Issues](https://github.com/269289854/moke-miku/issues)
+- 安全漏洞：请通过[私密报告](https://github.com/269289854/moke-miku/security/advisories/new)提交，不要公开发布
+- 参与开发：见 [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## 致谢
 
-- **Rex**（[@talebook](https://github.com/talebook)）— Talebook 服务器作者，Moke 项目指导者
-- 本项目基于 [talebook/moke](https://github.com/talebook/moke) 修改而来
+- [Talebook](https://github.com/talebook/talebook) 及其作者 Rex，Moke 的全部数据都来自 Talebook 服务器
+- [talebook/moke](https://github.com/talebook/moke)：本项目在它的基础上修改而来
+- [Readest](https://github.com/readest/readest) 与 [foliate-js](https://github.com/johnfactotum/foliate-js)：阅读器的基础
+- [Tauri](https://tauri.app/)：跨平台应用框架
 
-## 说明
-
-本项目部分代码由 AI 编程工具（Codex、cc-haha、multica-agent）辅助生成，所有代码均经过人工审查。
+部分代码在 AI 编程工具的辅助下完成，均经过人工审查。
 
 ## 许可证
 
-GPLv3
+本项目以 [GPLv3](LICENSE) 协议开源。
+
+作者：yizhimeng
