@@ -1,12 +1,11 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { ArrowLeft, BookOpen, Coffee, Crown, ExternalLink, HeartHandshake, Info, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, BookOpen, ExternalLink, HeartHandshake, Info, Sparkles } from 'lucide-react';
 import { DesktopLayout } from '@/components/layout/DesktopLayout';
 import { useDeveloperStore } from '@/lib/store/developer';
 import { APP_VERSION } from '@/lib/app-version';
 import { requestAnimatedBack } from '@/lib/native-back';
-import { sponsors } from './sponsors';
 
 interface Contributor {
   id: string;
@@ -14,32 +13,9 @@ interface Contributor {
   github: string;
   avatarUrl: string;
   role: string;
-  easterEgg?: {
-    image: string;
-    caption: string;
-  };
-  donate?: {
-    weixin: string;
-    alipay: string;
-  };
 }
 
 const contributors: Contributor[] = [
-  {
-    id: 'houheya',
-    name: 'houheya',
-    github: 'https://github.com/hehetoshang',
-    avatarUrl: '/contributors/houheya/avatar.jpg',
-    role: '主要维护者',
-    easterEgg: {
-      image: '/contributors/houheya/easter-egg.jpg',
-      caption: '我压榨了100个AI',
-    },
-    donate: {
-      weixin: '/contributors/houheya/weixin.jpg',
-      alipay: '/contributors/houheya/alipay.jpg',
-    },
-  },
   {
     id: 'talebook',
     name: 'Rex',
@@ -50,11 +26,6 @@ const contributors: Contributor[] = [
 ];
 
 export default function AboutPage() {
-  const [activeEgg, setActiveEgg] = useState<{ image: string; caption: string } | null>(null);
-  const [activeDonate, setActiveDonate] = useState<{ weixin: string; alipay: string } | null>(null);
-  const clickCountMap = useRef<Record<string, number>>({});
-  const clickTimerMap = useRef<Record<string, NodeJS.Timeout>>({});
-
   const { unlocked, enabled, setEnabled, tapVersion } = useDeveloperStore();
   const [devHint, setDevHint] = useState('');
   const devHintTimer = useRef<NodeJS.Timeout | null>(null);
@@ -90,26 +61,6 @@ export default function AboutPage() {
     }
     if (devHintTimer.current) clearTimeout(devHintTimer.current);
     devHintTimer.current = setTimeout(() => setDevHint(''), 2000);
-  };
-
-  const handleContributorClick = (c: Contributor) => {
-    if (!c.easterEgg) return;
-
-    const currentCount = (clickCountMap.current[c.id] || 0) + 1;
-    clickCountMap.current[c.id] = currentCount;
-
-    if (clickTimerMap.current[c.id]) {
-      clearTimeout(clickTimerMap.current[c.id]);
-    }
-
-    if (currentCount >= 8) {
-      setActiveEgg(c.easterEgg);
-      clickCountMap.current[c.id] = 0;
-    } else {
-      clickTimerMap.current[c.id] = setTimeout(() => {
-        clickCountMap.current[c.id] = 0;
-      }, 2000);
-    }
   };
 
   return (
@@ -184,8 +135,7 @@ export default function AboutPage() {
               {contributors.map((c) => (
                 <div
                   key={c.name}
-                  onClick={() => handleContributorClick(c)}
-                  className="flex items-center justify-between gap-3.5 rounded-2xl border border-border/60 bg-background/50 backdrop-blur-xs px-4 py-4 transition-all duration-300 hover:bg-muted/80 hover:shadow-md hover:-translate-y-0.5 select-none cursor-pointer group"
+                  className="flex items-center justify-between gap-3.5 rounded-2xl border border-border/60 bg-background/50 backdrop-blur-xs px-4 py-4 transition-all duration-300 hover:bg-muted/80 hover:shadow-md hover:-translate-y-0.5 select-none group"
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
                     <img
@@ -199,23 +149,10 @@ export default function AboutPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    {c.donate && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setActiveDonate(c.donate!);
-                        }}
-                        className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-card border border-transparent hover:border-border/60 hover:shadow-xs transition"
-                        title="支持一下"
-                      >
-                        <Coffee className="w-4 h-4" />
-                      </button>
-                    )}
                     <a
                       href={c.github}
                       target="_blank"
                       rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
                       className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-card border border-transparent hover:border-border/60 hover:shadow-xs transition"
                       title="访问 GitHub 主页"
                     >
@@ -226,86 +163,8 @@ export default function AboutPage() {
               ))}
             </div>
           </section>
-
-          <section className="rounded-[32px] app-glass p-6 transition-all duration-300 hover:bg-white/70">
-            <div className="flex items-center gap-2 mb-4 text-foreground">
-              <Crown className="w-5 h-5 text-amber-500" />
-              <h3 className="text-lg font-semibold">赞助名单</h3>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {sponsors.map((s) => (
-                <div
-                  key={s.id}
-                  className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 bg-background/50 backdrop-blur-xs px-4 py-3 transition-all duration-300 hover:bg-muted/80 hover:shadow-md"
-                >
-                  <span className="text-sm font-semibold text-foreground truncate">{s.name}</span>
-                  <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">{s.amount}</span>
-                </div>
-              ))}
-            </div>
-            <p className="mt-3 text-xs text-muted-foreground">感谢每一位赞助者的支持与鼓励，名单将持续更新 💛</p>
-          </section>
         </div>
       </div>
-
-      {activeEgg && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="relative max-w-lg w-[90%] rounded-3xl bg-card/95 border border-border/80 p-6 shadow-2xl flex flex-col items-center animate-in zoom-in-95 duration-300">
-            <button
-              onClick={() => setActiveEgg(null)}
-              className="absolute right-4 top-4 w-8 h-8 rounded-full bg-muted/80 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-all duration-200"
-            >
-              <X className="w-4 h-4" />
-            </button>
-            <div className="w-full overflow-hidden rounded-2xl mb-4 bg-black/5 border border-border/40 shadow-inner">
-              <img
-                src={activeEgg.image}
-                alt="彩蛋"
-                className="w-full h-auto max-h-[60vh] object-contain mx-auto"
-              />
-            </div>
-            <p className="text-sm text-muted-foreground text-center font-medium">
-              {activeEgg.caption}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {activeDonate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="relative max-w-xl w-[90%] rounded-3xl bg-card/95 border border-border/80 p-6 shadow-2xl flex flex-col items-center animate-in zoom-in-95 duration-300">
-            <button
-              onClick={() => setActiveDonate(null)}
-              className="absolute right-4 top-4 w-8 h-8 rounded-full bg-muted/80 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-all duration-200 z-10"
-            >
-              <X className="w-4 h-4" />
-            </button>
-            <h3 className="text-base font-semibold text-foreground mb-5">支持一下</h3>
-            <div className="flex items-start justify-center gap-6 w-full">
-              <div className="flex-1 flex flex-col items-center gap-2">
-                <div className="w-full overflow-hidden rounded-2xl bg-black/5 border border-border/40 shadow-inner">
-                  <img
-                    src={activeDonate.weixin}
-                    alt="微信赞赏码"
-                    className="w-full h-auto max-h-[50vh] object-contain mx-auto"
-                  />
-                </div>
-                <span className="text-xs text-muted-foreground">微信</span>
-              </div>
-              <div className="flex-1 flex flex-col items-center gap-2">
-                <div className="w-full overflow-hidden rounded-2xl bg-black/5 border border-border/40 shadow-inner">
-                  <img
-                    src={activeDonate.alipay}
-                    alt="支付宝收款码"
-                    className="w-full h-auto max-h-[50vh] object-contain mx-auto"
-                  />
-                </div>
-                <span className="text-xs text-muted-foreground">支付宝</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
       </div>
     </DesktopLayout>
   );

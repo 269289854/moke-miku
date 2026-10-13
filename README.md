@@ -61,28 +61,12 @@ Reader 原生命令仅授予顶层 Reader UI；书稿必须保持在 Foliate 的
 
 ## 开发者
 
-- **houheya**（[@hehetoshang](https://github.com/hehetoshang)）— Moke 客户端开发
+- **yizhimeng** — Moke 客户端开发
 
 ## 致谢
 
 - **Rex**（[@talebook](https://github.com/talebook)）— Talebook 服务器作者，Moke 项目指导者
-
-## 支持
-
-如果 Moke 对你有帮助，欢迎请维护者喝杯咖啡~
-
-<div align="center">
-  <table>
-    <tr>
-      <td align="center"><img src="public/contributors/houheya/weixin.jpg" width="200" alt="微信赞赏码" /><br/>微信</td>
-      <td align="center"><img src="public/contributors/houheya/alipay.jpg" width="200" alt="支付宝收款码" /><br/>支付宝</td>
-    </tr>
-  </table>
-</div>
-
-### 感谢以下用户的打赏支持
-
-- 微信用户金海先生
+- 本项目基于 [talebook/moke](https://github.com/talebook/moke) 修改而来
 
 ## 说明
 
