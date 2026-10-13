@@ -9,7 +9,7 @@ const POLICY_FALLBACK = `# Moke 隐私政策
 
 完整隐私政策暂时无法载入。Moke 不会在你同意前连接 Talebook 服务器或同步个人信息。
 
-如需帮助，请联系 shangzhen0831@163.com，或访问 https://github.com/talebook/moke。`;
+如需帮助，请联系 shangzhen0831@163.com，或访问 https://github.com/269289854/moke-miku。`;
 
 function readPrivacyPolicy(): string {
   try {

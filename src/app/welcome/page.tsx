@@ -220,7 +220,7 @@ export default function WelcomePage() {
 
           <div className="flex items-center justify-center gap-4 mt-6 text-xs text-muted-foreground">
             <span onClick={handleVersionClick} className="cursor-default select-none">{APP_VERSION}</span>
-            <a href="https://github.com/talebook/moke" target="_blank" rel="noopener noreferrer" className="hover:underline">
+            <a href="https://github.com/269289854/moke-miku" target="_blank" rel="noopener noreferrer" className="hover:underline">
               GitHub
             </a>
           </div>

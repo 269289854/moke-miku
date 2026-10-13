@@ -17,7 +17,7 @@
 
 **请不要在公开的 Issue 中披露安全漏洞。** 请通过 GitHub 的私密漏洞报告功能提交：
 
-**<https://github.com/talebook/moke/security/advisories/new>**
+**<https://github.com/269289854/moke-miku/security/advisories/new>**
 
 报告中请包含：
 
@@ -51,8 +51,8 @@
 ### 克隆并安装依赖
 
 ```bash
-git clone https://github.com/talebook/moke.git
-cd talebook_client
+git clone https://github.com/269289854/moke-miku.git
+cd moke-miku
 pnpm install
 cd readest && pnpm install && cd ..
 ```

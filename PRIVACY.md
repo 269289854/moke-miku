@@ -18,7 +18,7 @@ Moke 是一款用于连接用户自行选择或自行部署的 Talebook 电子�
 本政策中的“我们”指 Moke 开发者 **houheya**。如您对本政策有任何疑问，可通过以下方式联系我们：
 
 - 联系邮箱：<shangzhen0831@163.com>
-- 项目地址：<https://github.com/talebook/moke>
+- 项目地址：<https://github.com/269289854/moke-miku>
 
 ## 一、Moke 的服务方式
 
@@ -223,6 +223,6 @@ Moke 不是专门面向未满十四周岁未成年人的产品。未成年人应
 
 - 开发者：houheya
 - 联系邮箱：<shangzhen0831@163.com>
-- 项目地址：<https://github.com/talebook/moke>
+- 项目地址：<https://github.com/269289854/moke-miku>
 
 如果您的问题涉及特定 Talebook 服务器中的账号或数据，请优先联系相应服务器运营者。

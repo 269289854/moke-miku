@@ -4,7 +4,7 @@
 
 如果你发现了安全漏洞，请通过 GitHub 的私密漏洞报告功能提交，**不要在公开的 Issue 中披露**：
 
-**<https://github.com/talebook/moke/security/advisories/new>**
+**<https://github.com/269289854/moke-miku/security/advisories/new>**
 
 报告中请包含：
 
