@@ -91,9 +91,9 @@ When a user asks you to publish a version, follow these rules strictly:
 
 ## 反馈
 
-遇到问题或建议请提交 [GitHub Issues](https://github.com/talebook/moke/issues)。安全漏洞请通过[私密报告](https://github.com/talebook/moke/security/advisories/new)提交。
+遇到问题或建议请提交 [GitHub Issues](https://github.com/269289854/moke-miku/issues)。安全漏洞请通过[私密报告](https://github.com/269289854/moke-miku/security/advisories/new)提交。
 
-**Full Changelog**: [https://github.com/talebook/moke/compare/vx.x.x...vx.x.x](https://github.com/talebook/moke/compare/vx.x.x...vx.x.x)
+**Full Changelog**: [https://github.com/269289854/moke-miku/compare/vx.x.x...vx.x.x](https://github.com/269289854/moke-miku/compare/vx.x.x...vx.x.x)
 ```
 
 ### Build-environment gotcha (Windows + WSL)

@@ -40,13 +40,17 @@ if (sigFiles.length === 0) {
 // Derive version from GITHUB_REF (refs/tags/v0.1.5 → 0.1.5)
 const tag = process.env.GITHUB_REF || '';
 const version = tag.replace(/^refs\/tags\/v/, '') || '0.0.0';
-const base = `https://github.com/talebook/moke/releases/download/v${version}`;
+const repo = process.env.GITHUB_REPOSITORY || '269289854/moke-miku';
+const base = `https://github.com/${repo}/releases/download/v${version}`;
 
 // Map filename to platform. Prefer .exe over .msi for windows.
 function platformFromName(name) {
   const n = name.toLowerCase();
   if (n.includes('setup.exe.sig')) return 'windows-x86_64';
   if (n.includes('en-us.msi.sig')) return 'windows-x86_64-msi'; // dedup below
+  // Tauri signs the macOS updater bundle (<name>.app.tar.gz), never the .dmg.
+  // The macOS runner is Apple Silicon, so the bundle is aarch64.
+  if (n.endsWith('.app.tar.gz.sig')) return 'darwin-aarch64';
   if (n.includes('aarch64.dmg.sig')) return 'darwin-aarch64';
   if (n.includes('x64.dmg.sig')) return 'darwin-x86_64';
   if (n.includes('amd64.appimage.sig')) return 'linux-x86_64';

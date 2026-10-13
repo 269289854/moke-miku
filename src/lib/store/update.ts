@@ -22,7 +22,7 @@ type UpdateStatus =
 // 注意：tauri-plugin-opener 的 openUrl 在移动端走 open crate 的 unix 分支
 //（依赖 xdg-open/gio 等），Android/OHOS 上都不存在这些命令，因此无法调起
 // 系统浏览器——这里改为复制下载链接让用户自己粘贴打开。
-const RELEASE_URL = 'https://github.com/talebook/moke/releases/latest';
+const RELEASE_URL = 'https://github.com/269289854/moke-miku/releases/latest';
 
 const DISMISSED_KEY = 'moke-dismissed-update-version';
 

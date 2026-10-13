@@ -96,9 +96,9 @@
       "requireLiteralLeadingDot": false
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwQkJFQTlFQzIyQzQ5OEMKUldTTVNTekNudXE3RU1MVERSWHNFZ3U2Q2RWa2psN1hIbTF2Z0Q0aWRWNmFhSVM5b01oNkg4dGIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgwMDkzMDREM0RBQThDMDAKUldRQWpLbzlUVEFKZ0d4TmNHanFzM0J1T2Mwb215VmdLbUtqamlXUEdiOGZkeVB4ZllXMnJ5aTUK",
       "endpoints": [
-        "https://github.com/talebook/moke/releases/latest/download/latest.json"
+        "https://github.com/269289854/moke-miku/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
