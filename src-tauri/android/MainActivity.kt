@@ -12,7 +12,7 @@
 // 事件翻页。所有拦截均由前端 acquire/release 的 flag 控制，默认关闭，因此
 // Moke 主界面（非阅读器页面）的音量键/返回键行为保持不变。
 
-package org.houheya.moke
+package org.yizhimeng.moke
 
 import android.net.Uri
 import android.os.Bundle

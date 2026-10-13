@@ -139,7 +139,7 @@ function installWebOfflineStore() {
   return indexedDB;
 }
 
-function installTauriOfflineStore(appDataDir = '/data/user/0/org.houheya.moke') {
+function installTauriOfflineStore(appDataDir = '/data/user/0/org.yizhimeng.moke') {
   const indexedDB = createFakeIndexedDb();
   const calls = [];
   const recordedBooks = [];
@@ -428,7 +428,7 @@ test('Tauri 默认下载目录的所有文件操作都使用 AppData 相对路�
   assert.equal(recordedBooks.length, 1);
   assert.match(
     indexedDB.records.get('https://books.example.test::10::epub').filePath,
-    /^\/data\/user\/0\/org\.houheya\.moke\/books\//,
+    /^\/data\/user\/0\/org\.yizhimeng\.moke\/books\//,
   );
   assert.match(recordedBooks[0].relativePath, /^books\//);
 });
@@ -558,7 +558,7 @@ test('升级后原生索引缺失时恢复仍存在的下载且不读取书籍�
     title: 'Existing book', fileName: 'existing.epub', mimeType: 'application/epub+zip',
     size: 26, updatedAt: 123, accountKey: 'account-1',
     relativePath: 'books/a.example/42/epub/existing.epub',
-    filePath: '/data/user/0/org.houheya.moke/books/a.example/42/epub/existing.epub',
+    filePath: '/data/user/0/org.yizhimeng.moke/books/a.example/42/epub/existing.epub',
   });
 
   const recovered = await getOfflineBook('https://a.example', '42', 'epub');
@@ -584,7 +584,7 @@ test('离线列表恢复已存在的旧下载并过滤不存在的文件', async
       id, serverUrl: 'https://a.example', bookId: name, format: 'epub',
       title: name, fileName: `${name}.epub`, mimeType: 'application/epub+zip',
       size: 26, updatedAt: 123, relativePath: `books/${name}.epub`,
-      filePath: `/data/user/0/org.houheya.moke/books/${name}.epub`,
+      filePath: `/data/user/0/org.yizhimeng.moke/books/${name}.epub`,
     });
   }
   const records = await listOfflineBooks('https://a.example');
