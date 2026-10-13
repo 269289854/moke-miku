@@ -78,16 +78,11 @@ When a user asks you to publish a version, follow these rules strictly:
 
 | 平台              | 安装包                                               |
 | --------------- | ------------------------------------------------- |
-| Windows         | `Moke_x.x.x_x64_en-US.msi` / `.exe`               |
-| macOS           | `Moke_x.x.x_aarch64.dmg`                          |
-| Linux           | `Moke_x.x.x_amd64.AppImage` / `.deb`              |
+| Windows         | `Moke_x.x.x_x64-setup.exe` / `Moke_x.x.x_x64_en-US.msi` |
+| Linux           | `Moke_x.x.x_amd64.AppImage` / `.deb` / `.rpm`      |
 | Android         | `moke-android-release.apk`                        |
-| iOS/iPadOS      | `Moke.ipa`（自签名安装）                                 |
-| OpenHarmony（鸿蒙） | `entry-default-unsigned.hap`（alpha，未签名，可能需要自签名安装） |
 
-> 系统要求：Windows 10 1809+ / macOS 11+ / Linux（glibc 2.31+）/ Android 8+ / iOS/iPadOS 17+ / HarmonyOS NEXT 5.0+（API 12）
-
-> ⚠️ OpenHarmony（鸿蒙）HAP 目前为 **alpha 版本**，Bug 较多，仅建议在测试设备上体验；安装包未签名，可能需要自签名安装。
+> 系统要求：Windows 10 1809+ / Linux（glibc 2.31+）/ Android 8+
 
 ## 反馈
 
@@ -167,7 +162,7 @@ Tauri APIs.
 
 ### The `readest/` reader (`readest/apps/readest-app`)
 
-The Reader-only [readest-reader](https://github.com/hehetoshang/readest-reader) repository is
+The Reader-only [readest-reader](https://github.com/269289854/readest-reader) repository is
 integrated as a **separate Next.js frontend**: it builds with `basePath:/readest` and
 `distDir:../../out/readest`. In dev it runs at `http://localhost:3001/readest/reader`; in a build it
 is bundled at `/readest/reader`. Moke uses only the static Reader frontend and the embeddable

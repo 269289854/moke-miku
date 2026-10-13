@@ -41,20 +41,20 @@
 
 ### 环境要求
 
-- **Node.js** 22+
-- **pnpm** 10+
+- **Node.js** 20.9+
+- **pnpm** 9.15.9（`package.json` 已锁定版本，可用 `corepack install --global pnpm@9.15.9` 安装）
 - **Rust** 工具链（[rustup](https://rustup.rs/)）
 - **Windows** — 需要 Visual Studio 2022 Build Tools（"使用 C++ 的桌面开发" 工作负荷）
-- **macOS** — 需要 Xcode Command Line Tools
 - **Linux** — 需要 `build-essential`、`libwebkit2gtk-4.1-dev` 等 Tauri 系统依赖（参见 [Tauri 文档](https://v2.tauri.app/start/prerequisites/)）
+- **Android** — 需要 JDK 17、Android SDK（platform 35、build-tools 35.0.0）与 NDK 27
 
 ### 克隆并安装依赖
 
 ```bash
-git clone https://github.com/269289854/moke-miku.git
+git clone --recursive https://github.com/269289854/moke-miku.git
 cd moke-miku
 pnpm install
-cd readest && pnpm install && cd ..
+cd readest && pnpm install && pnpm setup:vendors && cd ..
 ```
 
 ### 开发命令

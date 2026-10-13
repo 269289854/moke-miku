@@ -8,7 +8,6 @@
   ],
   "platforms": [
     "linux",
-    "macOS",
     "windows"
   ],
   "permissions": [

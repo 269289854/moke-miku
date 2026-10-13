@@ -5,20 +5,13 @@ import { fileURLToPath } from 'node:url';
 const DEFAULT_ARTIFACT_ROOTS = [
   'src-tauri/target/release/bundle',
   'src-tauri/gen/android/app/build/outputs/apk',
-  'src-tauri/gen/apple/build',
-  'src-tauri/gen/ohos',
-  'ios-release-artifacts',
 ];
 
 const ARTIFACT_SUFFIXES = [
-  '.app',
   '.appimage',
   '.apk',
   '.deb',
-  '.dmg',
   '.exe',
-  '.hap',
-  '.ipa',
   '.msi',
   '.sig',
 ];
@@ -31,7 +24,6 @@ function isUploadArtifact(name) {
 function normalizeArtifactTree(root, renamed) {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const source = path.join(root, entry.name);
-    const isAppBundle = entry.isDirectory() && entry.name.toLowerCase().endsWith('.app');
 
     if (entry.name.includes('墨客') && isUploadArtifact(entry.name)) {
       const destination = path.join(root, entry.name.replaceAll('墨客', 'moke'));
@@ -43,8 +35,7 @@ function normalizeArtifactTree(root, renamed) {
       continue;
     }
 
-    // An .app bundle is a signed upload artifact. Never rename files inside it.
-    if (entry.isDirectory() && !isAppBundle) {
+    if (entry.isDirectory()) {
       normalizeArtifactTree(source, renamed);
     }
   }

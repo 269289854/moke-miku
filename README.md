@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/269289854/moke-miku)](https://github.com/269289854/moke-miku/releases/latest)
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
-把自己搭的 [Talebook](https://github.com/talebook/talebook) 书库装进口袋。Moke 连接你的 Talebook 服务器，在电脑、手机和鸿蒙设备上统一完成找书、下书和读书；网络不好甚至断网时，已经缓存或下载过的书照样能打开。
+把自己搭的 [Talebook](https://github.com/talebook/talebook) 书库装进口袋。Moke 连接你的 Talebook 服务器，在 Windows、Linux 电脑和 Android 手机上统一完成找书、下书和读书；网络不好甚至断网时，已经缓存或下载过的书照样能打开。
 
 ## 亮点
 
@@ -38,12 +38,10 @@
 | 平台 | 文件 | 备注 |
 |---|---|---|
 | Windows 10 1809+ | `.exe` / `.msi` | 推荐 `.exe`，支持自动更新 |
-| macOS 11+（Apple 芯片） | `.dmg` | 支持自动更新 |
 | Linux（glibc 2.31+） | `.AppImage` / `.deb` / `.rpm` | `.AppImage` 支持自动更新 |
 | Android 8+ | `moke-android-release.apk` | 每个版本签名一致，可直接覆盖安装 |
-| HarmonyOS NEXT 5.0+（API 12） | `entry-default-unsigned.hap` | alpha 测试版，未签名，需要自行签名安装 |
 
-暂不提供 iOS 安装包。
+目前只支持以上三个平台，不提供 macOS、iOS 和鸿蒙版本。
 
 ## 三步开始
 
@@ -72,6 +70,13 @@ cd readest && pnpm install && pnpm setup:vendors && cd ..
 ```
 
 `pnpm setup:vendors` 会生成阅读器所需的 PDF.js、SimpleCC、Jieba 资源。之后每次更新子模块，都需要重新执行一次。
+
+已经克隆过的仓库，拉取新代码后如果子模块地址或版本有变化，先同步子模块：
+
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+```
 
 ### 常用命令
 

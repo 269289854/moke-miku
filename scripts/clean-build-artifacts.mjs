@@ -12,10 +12,6 @@ const BUILD_ARTIFACTS = [
   'src-tauri/gen/android/.gradle',
   'src-tauri/gen/android/build',
   'src-tauri/gen/android/app/build',
-  'src-tauri/gen/apple/build',
-  'src-tauri/gen/ohos/.hvigor',
-  'src-tauri/gen/ohos/build',
-  'src-tauri/gen/ohos/entry/build',
 ];
 
 function removeIfPresent(target, removed) {

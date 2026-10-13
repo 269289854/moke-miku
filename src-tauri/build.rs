@@ -1,5 +1,3 @@
-mod build_config;
-
 // Keep this list in lockstep with readestlib::reader_invoke_handler. The
 // reader-only contract test parses both lists and fails if the submodule's bare
 // command surface drifts. Host-owned commands are declared here too so each
@@ -56,21 +54,6 @@ fn main() {
     let attributes = tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(APP_ACL_COMMANDS),
     );
-
-    // Desktop capabilities reference plugins that are unavailable on OHOS, so
-    // only compile the platform-specific capability. Device dev servers run on
-    // ports 3000/3001 and need a remote origin. Only Cargo's explicit
-    // development profiles receive that grant; release, custom, and missing
-    // profiles fail closed to the production capability.
-    let attributes = if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("ohos") {
-        let profile = std::env::var("PROFILE").ok();
-        let capability = build_config::ohos_capability_for_profile(profile.as_deref());
-        println!("cargo:rerun-if-changed=capabilities/ohos.json");
-        println!("cargo:rerun-if-changed=capabilities-dev/ohos.json");
-        attributes.capabilities_path_pattern(capability)
-    } else {
-        attributes
-    };
 
     tauri_build::try_build(attributes).expect("failed to build Tauri assets");
 }

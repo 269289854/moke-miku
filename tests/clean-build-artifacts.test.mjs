@@ -29,8 +29,6 @@ test('default cleanup removes frontend outputs and Rust incremental caches', () 
   createFile(root, 'readest/out/readest/index.html');
   createFile(root, 'readest/apps/readest-app/.next/cache/reader');
   createFile(root, 'src-tauri/gen/android/app/build/outputs/app.apk');
-  createFile(root, 'src-tauri/gen/apple/build/Moke.app/binary');
-  createFile(root, 'src-tauri/gen/ohos/entry/build/default/outputs/app.hap');
   createFile(root, 'src-tauri/target/debug/incremental/moke/cache');
   createFile(root, 'src-tauri/target/x86_64-pc-windows-msvc/debug/incremental/moke/cache');
   createFile(root, 'src-tauri/target/debug/deps/libmoke.rlib');
@@ -43,8 +41,6 @@ test('default cleanup removes frontend outputs and Rust incremental caches', () 
     'readest/apps/readest-app/.next',
     'readest/out',
     'src-tauri/gen/android/app/build',
-    'src-tauri/gen/apple/build',
-    'src-tauri/gen/ohos/entry/build',
     'src-tauri/target/debug/incremental',
     'src-tauri/target/x86_64-pc-windows-msvc/debug/incremental',
   ]);

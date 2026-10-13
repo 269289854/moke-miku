@@ -1,13 +1,12 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "reader-mobile",
-  "description": "Readest top-level UI capabilities for the Android and iOS single-WebView flow; publication content remains sandboxed.",
+  "description": "Readest top-level UI capabilities for the Android single-WebView flow; publication content remains sandboxed.",
   "windows": [
     "main"
   ],
   "platforms": [
-    "android",
-    "iOS"
+    "android"
   ],
   "permissions": [
     "core:default",

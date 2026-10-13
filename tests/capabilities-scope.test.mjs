@@ -10,10 +10,7 @@ const PRODUCTION_CAPABILITY_FILES = [
   'src-tauri/capabilities/default.json',
   'src-tauri/capabilities/reader.json',
   'src-tauri/capabilities/reader-mobile.json',
-  'src-tauri/capabilities/ohos.json',
 ];
-const DEV_OHOS_CAPABILITY = 'src-tauri/capabilities-dev/ohos.json';
-const ALL_CAPABILITY_FILES = [...PRODUCTION_CAPABILITY_FILES, DEV_OHOS_CAPABILITY];
 
 function readCapability(file) {
   return JSON.parse(readFileSync(join(repoRoot, file), 'utf8'));
@@ -77,7 +74,7 @@ function isApprovedAppDirectoryRoot(file, identifier, path) {
   );
 }
 
-for (const file of ALL_CAPABILITY_FILES) {
+for (const file of PRODUCTION_CAPABILITY_FILES) {
   test(`${file} fs/opener allow entries stay inside app-private or temp directories`, () => {
     const offenders = collectFsOpenerAllowEntries(readCapability(file))
       .filter(({ path }) => !isRestrictedToPrivateDirs(path))
@@ -100,17 +97,14 @@ test('production capabilities are split by host, desktop reader, and mobile read
   const main = readCapability('src-tauri/capabilities/default.json');
   const reader = readCapability('src-tauri/capabilities/reader.json');
   const mobileReader = readCapability('src-tauri/capabilities/reader-mobile.json');
-  const ohos = readCapability('src-tauri/capabilities/ohos.json');
 
   assert.deepEqual(main.windows, ['main']);
   assert.deepEqual(reader.windows, ['reader-*', 'moke-home-*']);
-  assert.deepEqual(reader.platforms, ['linux', 'macOS', 'windows']);
+  assert.deepEqual(reader.platforms, ['linux', 'windows']);
   assert.deepEqual(mobileReader.windows, ['main']);
-  assert.deepEqual(mobileReader.platforms, ['android', 'iOS']);
-  assert.deepEqual(ohos.windows, ['main']);
-  assert.deepEqual(ohos.platforms, ['openHarmony']);
+  assert.deepEqual(mobileReader.platforms, ['android']);
 
-  for (const capability of [main, reader, mobileReader, ohos]) {
+  for (const capability of [main, reader, mobileReader]) {
     assert.ok(!capability.windows.includes('*'));
   }
 });
@@ -142,10 +136,6 @@ test('base Tauri config activates only host and reader capabilities', () => {
     'reader',
     'reader-mobile',
   ]);
-  assert.ok(
-    !readTauriConfig().app.security.capabilities.includes('ohos'),
-    'the broad single-WebView OHOS capability must not merge into desktop main',
-  );
 });
 
 test('desktop and mobile reader variants grant the same reader operations', () => {
@@ -158,7 +148,6 @@ test('embedded reader windows can update their native window title', () => {
   for (const file of [
     'src-tauri/capabilities/reader.json',
     'src-tauri/capabilities/reader-mobile.json',
-    'src-tauri/capabilities/ohos.json',
   ]) {
     const capability = readCapability(file);
     assert.ok(
@@ -342,9 +331,6 @@ test('reader capabilities retain random-access file reads', () => {
     const capability = readCapability(file);
     assert.ok(findPermission(capability, 'fs:read-files'));
   }
-  assert.ok(
-    readCapability('src-tauri/capabilities/ohos.json').permissions.includes('fs:allow-seek'),
-  );
 });
 
 test('production capabilities contain no remote origin grants', () => {
@@ -352,51 +338,6 @@ test('production capabilities contain no remote origin grants', () => {
     const capability = readCapability(file);
     assert.equal(capability.remote, undefined, `${file} must be local-only in release builds`);
   }
-});
-
-test('OHOS build grants remote origins only to explicit development profiles', () => {
-  const buildConfig = readFileSync(join(repoRoot, 'src-tauri/build_config.rs'), 'utf8');
-  const buildScript = readFileSync(join(repoRoot, 'src-tauri/build.rs'), 'utf8');
-
-  assert.match(
-    buildConfig,
-    /OHOS_DEVELOPMENT_PROFILES: &\[&str\] = &\["debug", "dev"\]/,
-  );
-  assert.match(buildConfig, /_ => OHOS_PRODUCTION_CAPABILITY/);
-  assert.match(
-    buildScript,
-    /ohos_capability_for_profile\(profile\.as_deref\(\)\)/,
-  );
-  for (const customProfile of ['release', 'staging', 'nightly']) {
-    assert.ok(
-      !buildConfig.match(/OHOS_DEVELOPMENT_PROFILES[^;]+;/s)?.[0].includes(`"${customProfile}"`),
-      `${customProfile} must fail closed to the production capability`,
-    );
-  }
-});
-
-test('OHOS capabilities use the generated OpenHarmony schema', () => {
-  for (const file of ['src-tauri/capabilities/ohos.json', DEV_OHOS_CAPABILITY]) {
-    const capability = readCapability(file);
-    assert.equal(capability.$schema, '../gen/schemas/open-harmony-schema.json');
-    assert.doesNotThrow(() => JSON.parse(
-      readFileSync(join(dirname(join(repoRoot, file)), capability.$schema), 'utf8'),
-    ));
-  }
-});
-
-test('OHOS dev capability differs only by its development server origins', () => {
-  const production = readCapability('src-tauri/capabilities/ohos.json');
-  const development = readCapability(DEV_OHOS_CAPABILITY);
-  const { remote, ...developmentBase } = development;
-
-  assert.deepEqual(developmentBase, production);
-  assert.deepEqual(remote.urls, [
-    'http://*:3000/**',
-    'https://*:3000/**',
-    'http://*:3001/**',
-    'https://*:3001/**',
-  ]);
 });
 
 test('HTTP access remains scheme-scoped and allows arbitrary server ports', () => {

@@ -26,12 +26,6 @@ compile_error!("reader-e2e is supported only by desktop development builds");
 
 mod extensions;
 
-// Keep build-script profile routing covered by the normal `cargo test --lib`
-// command used in CI without compiling it into production application code.
-#[cfg(test)]
-#[path = "../build_config.rs"]
-mod build_config;
-
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -1232,8 +1226,6 @@ mod fs_scope_tests {
             manifest_dir.join("capabilities/default.json"),
             manifest_dir.join("capabilities/reader.json"),
             manifest_dir.join("capabilities/reader-mobile.json"),
-            manifest_dir.join("capabilities/ohos.json"),
-            manifest_dir.join("capabilities-dev/ohos.json"),
         ];
         for file in &files {
             let text = std::fs::read_to_string(file)

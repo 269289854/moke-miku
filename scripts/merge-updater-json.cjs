@@ -48,11 +48,6 @@ function platformFromName(name) {
   const n = name.toLowerCase();
   if (n.includes('setup.exe.sig')) return 'windows-x86_64';
   if (n.includes('en-us.msi.sig')) return 'windows-x86_64-msi'; // dedup below
-  // Tauri signs the macOS updater bundle (<name>.app.tar.gz), never the .dmg.
-  // The macOS runner is Apple Silicon, so the bundle is aarch64.
-  if (n.endsWith('.app.tar.gz.sig')) return 'darwin-aarch64';
-  if (n.includes('aarch64.dmg.sig')) return 'darwin-aarch64';
-  if (n.includes('x64.dmg.sig')) return 'darwin-x86_64';
   if (n.includes('amd64.appimage.sig')) return 'linux-x86_64';
   if (n.includes('amd64.deb.sig')) return 'linux-x86_64-deb';
   if (n.includes('aarch64.appimage.sig')) return 'linux-aarch64';

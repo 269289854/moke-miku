@@ -86,9 +86,6 @@
       "nsis": {
         "installMode": "currentUser"
       }
-    },
-    "iOS": {
-      "developmentTeam": "6X9BLAS47C"
     }
   },
   "plugins": {
