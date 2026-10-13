@@ -7,7 +7,7 @@
 	branch = dev
 [submodule "vendor/foliate-js"]
 	path = vendor/foliate-js
-	url = https://github.com/hehetoshang/foliate-js
+	url = https://github.com/269289854/foliate-js
 [submodule "vendor/simplecc-wasm"]
 	path = vendor/simplecc-wasm
 	url = https://github.com/readest/simplecc-wasm.git
@@ -22,5 +22,5 @@
 	url = https://github.com/harmony-contrib/openharmony-ability.git
 [submodule "vendor/wry"]
 	path = vendor/wry
-	url = https://github.com/hehetoshang/wry.git
+	url = https://github.com/269289854/wry.git
 	branch = feat/open-harmony
